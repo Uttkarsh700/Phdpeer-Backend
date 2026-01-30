@@ -1,5 +1,5 @@
 """AnalyticsSnapshot model."""
-from sqlalchemy import Column, String, Date, ForeignKey
+from sqlalchemy import Column, String, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
@@ -9,17 +9,16 @@ from app.models.base import BaseModel
 
 class AnalyticsSnapshot(Base, BaseModel):
     """
-    AnalyticsSnapshot model for storing analytics reports.
+    AnalyticsSnapshot model for storing immutable analytics snapshots.
     
-    Snapshots capture aggregated analytics data at a point in time,
-    including time-series summaries and status indicators.
+    Snapshots persist the output of AnalyticsEngine.aggregate() as
+    an immutable record for historical tracking and analysis.
     
     Attributes:
         user_id: Reference to the user
-        timeline_id: Optional reference to committed timeline
-        snapshot_date: Date when snapshot was generated
-        analytics_data: Complete analytics report as JSON
-        snapshot_type: Type of snapshot (daily, weekly, on_demand)
+        timeline_version: Version string of the timeline (e.g., "1.0", "2.0")
+        summary_json: Complete AnalyticsSummary output as JSON
+        created_at: Timestamp when snapshot was created (from BaseModel)
     """
     
     __tablename__ = "analytics_snapshots"
@@ -30,16 +29,15 @@ class AnalyticsSnapshot(Base, BaseModel):
         nullable=False,
         index=True
     )
-    timeline_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("committed_timelines.id", ondelete="SET NULL"),
-        nullable=True,
+    timeline_version = Column(
+        String(50),
+        nullable=False,
         index=True
     )
-    snapshot_date = Column(Date, nullable=False, index=True)
-    analytics_data = Column(JSONB, nullable=False)
-    snapshot_type = Column(String(50), nullable=False, default="on_demand")  # "daily", "weekly", "on_demand"
+    summary_json = Column(
+        JSONB,
+        nullable=False
+    )
     
     # Relationships
     user = relationship("User", back_populates="analytics_snapshots")
-    timeline = relationship("CommittedTimeline")

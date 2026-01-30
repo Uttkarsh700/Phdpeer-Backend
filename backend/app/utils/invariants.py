@@ -7,6 +7,8 @@ Enforces critical system constraints:
 3. No committed timeline without draft
 4. No PhD Doctor score without submission
 5. No progress event without committed milestone
+6. No analytics without committed timeline
+7. No state mutation inside AnalyticsOrchestrator
 
 Fail fast with explicit errors.
 """
@@ -66,6 +68,20 @@ class StateMutationOutsideOrchestratorError(InvariantViolationError):
     
     def __init__(self, message: str, details: dict = None):
         super().__init__("state_mutation_outside_orchestrator", message, details)
+
+
+class AnalyticsWithoutCommittedTimelineError(InvariantViolationError):
+    """Raised when attempting analytics without committed timeline."""
+    
+    def __init__(self, message: str, details: dict = None):
+        super().__init__("analytics_without_committed_timeline", message, details)
+
+
+class StateMutationInAnalyticsOrchestratorError(InvariantViolationError):
+    """Raised when state mutation attempted inside AnalyticsOrchestrator."""
+    
+    def __init__(self, message: str, details: dict = None):
+        super().__init__("state_mutation_in_analytics_orchestrator", message, details)
 
 
 class InvariantChecker:
@@ -228,7 +244,7 @@ class InvariantChecker:
         
         # Check milestone belongs to a stage
         stage = self.db.query(TimelineStage).filter(
-            TimelineStage.id == milestone.stage_id
+            TimelineStage.id == milestone.timeline_stage_id
         ).first()
         
         if not stage:
@@ -237,7 +253,7 @@ class InvariantChecker:
                 details={
                     "user_id": str(user_id),
                     "milestone_id": str(milestone_id),
-                    "stage_id": milestone.stage_id,
+                    "stage_id": milestone.timeline_stage_id,
                     "stage_exists": False
                 }
             )
@@ -256,7 +272,7 @@ class InvariantChecker:
                 details={
                     "user_id": str(user_id),
                     "milestone_id": str(milestone_id),
-                    "stage_id": milestone.stage_id,
+                    "stage_id": milestone.timeline_stage_id,
                     "committed_timeline_id": stage.committed_timeline_id,
                     "hint": "Progress can only be tracked on committed timelines"
                 }
@@ -455,6 +471,18 @@ class InvariantChecker:
                 caller_context=context.get("caller_context", {})
             )
         
+        elif operation == "run_analytics":
+            self.check_analytics_has_committed_timeline(
+                user_id=context["user_id"],
+                timeline_id=context.get("timeline_id")
+            )
+        
+        elif operation == "check_analytics_state_mutation":
+            self.check_no_state_mutation_in_analytics_orchestrator(
+                operation=context["operation"],
+                caller_context=context.get("caller_context", {})
+            )
+        
         else:
             # Unknown operation - no checks
             pass
@@ -516,6 +544,130 @@ class InvariantChecker:
                     "context": caller_context
                 }
             )
+    
+    def check_analytics_has_committed_timeline(
+        self,
+        user_id: UUID,
+        timeline_id: Optional[UUID] = None
+    ) -> None:
+        """
+        Invariant: No analytics without committed timeline.
+        
+        Analytics can only be generated for CommittedTimeline records.
+        This ensures analytics are based on immutable, committed data.
+        
+        Args:
+            user_id: User ID
+            timeline_id: Optional timeline ID (checks latest if not provided)
+            
+        Raises:
+            AnalyticsWithoutCommittedTimelineError: If no committed timeline exists
+        """
+        from app.models.committed_timeline import CommittedTimeline
+        
+        if timeline_id:
+            timeline = self.db.query(CommittedTimeline).filter(
+                CommittedTimeline.id == timeline_id,
+                CommittedTimeline.user_id == user_id
+            ).first()
+            
+            if not timeline:
+                raise AnalyticsWithoutCommittedTimelineError(
+                    f"Cannot generate analytics: CommittedTimeline {timeline_id} not found or not owned by user {user_id}",
+                    details={
+                        "user_id": str(user_id),
+                        "timeline_id": str(timeline_id),
+                        "exists": False,
+                        "hint": "Analytics can only be generated for committed timelines"
+                    }
+                )
+        else:
+            # Check if user has any committed timeline
+            timeline = self.db.query(CommittedTimeline).filter(
+                CommittedTimeline.user_id == user_id
+            ).order_by(CommittedTimeline.committed_date.desc()).first()
+            
+            if not timeline:
+                raise AnalyticsWithoutCommittedTimelineError(
+                    f"Cannot generate analytics: No CommittedTimeline found for user {user_id}",
+                    details={
+                        "user_id": str(user_id),
+                        "timeline_id": None,
+                        "has_committed_timeline": False,
+                        "hint": "Commit a timeline before generating analytics"
+                    }
+                )
+    
+    def check_no_state_mutation_in_analytics_orchestrator(
+        self,
+        operation: str,
+        caller_context: dict
+    ) -> None:
+        """
+        Invariant: No state mutation inside AnalyticsOrchestrator.
+        
+        AnalyticsOrchestrator must be read-only. It should only:
+        - Read data (CommittedTimeline, ProgressEvents, JourneyAssessment)
+        - Create AnalyticsSnapshot (immutable snapshot, not mutation)
+        
+        It must NOT:
+        - Update any upstream models
+        - Delete any records
+        - Modify timeline, progress, or assessment data
+        
+        Args:
+            operation: Operation name (e.g., "update_timeline", "delete_event")
+            caller_context: Context about the caller
+            
+        Raises:
+            StateMutationInAnalyticsOrchestratorError: If mutation attempted
+        """
+        import inspect
+        
+        # Get the call stack
+        stack = inspect.stack()
+        
+        # Check if we're being called from AnalyticsOrchestrator
+        is_analytics_orchestrator = False
+        caller_module = None
+        caller_function = None
+        
+        for frame_info in stack[2:8]:  # Check deeper stack for AnalyticsOrchestrator
+            frame = frame_info.frame
+            module_name = frame.f_globals.get('__name__', '')
+            function_name = frame_info.function
+            
+            if 'analytics_orchestrator' in module_name.lower():
+                is_analytics_orchestrator = True
+                caller_module = module_name
+                caller_function = function_name
+                break
+        
+        if is_analytics_orchestrator:
+            # Check if operation is a mutation (not allowed)
+            mutation_operations = [
+                'update', 'delete', 'modify', 'change', 'edit',
+                'set', 'remove', 'clear', 'reset'
+            ]
+            
+            operation_lower = operation.lower()
+            is_mutation = any(mut_op in operation_lower for mut_op in mutation_operations)
+            
+            # Allow creating AnalyticsSnapshot (it's an immutable snapshot, not a mutation)
+            if 'create' in operation_lower and 'analytics_snapshot' in operation_lower:
+                is_mutation = False
+            
+            if is_mutation:
+                raise StateMutationInAnalyticsOrchestratorError(
+                    f"State mutation '{operation}' attempted inside AnalyticsOrchestrator",
+                    details={
+                        "operation": operation,
+                        "caller_module": caller_module,
+                        "caller_function": caller_function,
+                        "hint": "AnalyticsOrchestrator is read-only. It can only read data and create immutable snapshots.",
+                        "context": caller_context
+                    }
+                )
 
 
 # Convenience functions for direct usage
@@ -657,3 +809,52 @@ def validate_orchestrator_name(orchestrator_name: str) -> None:
     
     if not orchestrator_name.replace('_', '').isalnum():
         raise ValueError("orchestrator_name must contain only alphanumeric characters and underscores")
+
+
+def check_analytics_has_committed_timeline(
+    db: Session,
+    user_id: UUID,
+    timeline_id: Optional[UUID] = None
+) -> None:
+    """
+    Invariant: No analytics without committed timeline.
+    
+    Utility helper for ensuring analytics only run on committed timelines.
+    Fail fast with explicit error.
+    
+    Args:
+        db: Database session
+        user_id: User ID
+        timeline_id: Optional timeline ID (checks latest if not provided)
+        
+    Raises:
+        AnalyticsWithoutCommittedTimelineError: If no committed timeline exists
+    """
+    checker = InvariantChecker(db)
+    checker.check_analytics_has_committed_timeline(user_id, timeline_id)
+
+
+def check_no_state_mutation_in_analytics_orchestrator(
+    db: Session,
+    operation: str,
+    caller_context: dict = None
+) -> None:
+    """
+    Invariant: No state mutation inside AnalyticsOrchestrator.
+    
+    Utility helper for ensuring AnalyticsOrchestrator is read-only.
+    Fail fast with explicit error.
+    
+    Args:
+        db: Database session
+        operation: Operation name
+        caller_context: Optional context about the caller
+        
+    Raises:
+        StateMutationInAnalyticsOrchestratorError: If mutation attempted
+    """
+    checker = InvariantChecker(db)
+    checker.check_no_state_mutation_in_analytics_orchestrator(
+        operation,
+        caller_context or {}
+    )

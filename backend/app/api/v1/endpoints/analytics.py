@@ -1,0 +1,141 @@
+"""Analytics API endpoints."""
+from typing import Optional
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.orchestrators.analytics_orchestrator import (
+    AnalyticsOrchestrator,
+    AnalyticsOrchestratorError,
+)
+from app.models.analytics_snapshot import AnalyticsSnapshot
+from app.models.committed_timeline import CommittedTimeline
+
+router = APIRouter()
+
+
+@router.get("/summary")
+async def get_analytics_summary(
+    timeline_id: Optional[UUID] = Query(None, description="Optional timeline ID (uses latest if not provided)"),
+    user_id: UUID = Query(..., description="User ID"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Get analytics summary for a user's timeline.
+    
+    Behavior:
+    - Triggers AnalyticsOrchestrator.run() if no snapshot exists for timeline version
+    - Returns latest AnalyticsSnapshot
+    - Idempotent for same timeline version (returns cached snapshot)
+    
+    No side effects beyond snapshot creation.
+    
+    Args:
+        timeline_id: Optional committed timeline ID (uses latest if not provided)
+        user_id: User ID
+        db: Database session
+        
+    Returns:
+        Dashboard-ready JSON with analytics summary
+        
+    Raises:
+        HTTPException: If analytics generation fails
+    """
+    try:
+        # Get committed timeline to determine version
+        if timeline_id:
+            committed_timeline = db.query(CommittedTimeline).filter(
+                CommittedTimeline.id == timeline_id,
+                CommittedTimeline.user_id == user_id
+            ).first()
+            if not committed_timeline:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Timeline {timeline_id} not found or not owned by user {user_id}"
+                )
+        else:
+            # Get latest committed timeline
+            committed_timeline = db.query(CommittedTimeline).filter(
+                CommittedTimeline.user_id == user_id
+            ).order_by(CommittedTimeline.committed_date.desc()).first()
+            
+            if not committed_timeline:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No committed timeline found for user {user_id}"
+                )
+        
+        # Extract timeline version
+        # Try to get version from draft_timeline
+        timeline_version = "1.0"  # Default
+        if committed_timeline.draft_timeline_id:
+            from app.models.draft_timeline import DraftTimeline
+            draft = db.query(DraftTimeline).filter(
+                DraftTimeline.id == committed_timeline.draft_timeline_id
+            ).first()
+            if draft and draft.version_number:
+                timeline_version = draft.version_number
+        
+        # Try to extract from notes if not found
+        if timeline_version == "1.0" and committed_timeline.notes:
+            import re
+            match = re.search(r'Version\s+(\d+\.\d+)', committed_timeline.notes)
+            if match:
+                timeline_version = match.group(1)
+        
+        # Check if snapshot already exists for this timeline version (idempotency)
+        existing_snapshot = db.query(AnalyticsSnapshot).filter(
+            AnalyticsSnapshot.user_id == user_id,
+            AnalyticsSnapshot.timeline_version == timeline_version
+        ).order_by(AnalyticsSnapshot.created_at.desc()).first()
+        
+        if existing_snapshot:
+            # Return existing snapshot (idempotent)
+            return {
+                "snapshot_id": str(existing_snapshot.id),
+                "timeline_version": existing_snapshot.timeline_version,
+                "created_at": existing_snapshot.created_at.isoformat(),
+                "summary": existing_snapshot.summary_json,
+                "from_cache": True
+            }
+        
+        # Generate new snapshot
+        orchestrator = AnalyticsOrchestrator(db, user_id)
+        request_id = f"analytics-{user_id}-{committed_timeline.id}-{timeline_version}"
+        result = orchestrator.run(
+            request_id=request_id,
+            user_id=user_id,
+            timeline_id=committed_timeline.id
+        )
+        
+        # Get the newly created snapshot
+        new_snapshot = db.query(AnalyticsSnapshot).filter(
+            AnalyticsSnapshot.user_id == user_id,
+            AnalyticsSnapshot.timeline_version == timeline_version
+        ).order_by(AnalyticsSnapshot.created_at.desc()).first()
+        
+        if not new_snapshot:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to retrieve created snapshot"
+            )
+        
+        return {
+            "snapshot_id": str(new_snapshot.id),
+            "timeline_version": new_snapshot.timeline_version,
+            "created_at": new_snapshot.created_at.isoformat(),
+            "summary": new_snapshot.summary_json,
+            "from_cache": False
+        }
+        
+    except AnalyticsOrchestratorError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )

@@ -44,6 +44,7 @@ from app.services.analytics_engine import (
     TimeSeriesSummary,
     StatusIndicator,
     AnalyticsReport,
+    AnalyticsSummary,
 )
 from app.services.sal_engine import (
     SALEngine,
@@ -83,6 +84,7 @@ __all__ = [
     "TimeSeriesSummary",
     "StatusIndicator",
     "AnalyticsReport",
+    "AnalyticsSummary",
     "SALEngine",
     "SALEngineError",
     "CPAEngine",

@@ -53,6 +53,37 @@ class AnalyticsReport:
     summary: Dict[str, Any]
 
 
+@dataclass
+class AnalyticsSummary:
+    """Structured analytics summary for dashboard."""
+    timeline_id: UUID
+    user_id: UUID
+    generated_at: date
+    
+    # Timeline status
+    timeline_status: str  # "on_track" | "delayed" | "completed"
+    
+    # Milestone metrics
+    milestone_completion_percentage: float
+    total_milestones: int
+    completed_milestones: int
+    pending_milestones: int
+    
+    # Delay metrics
+    total_delays: int
+    overdue_milestones: int
+    overdue_critical_milestones: int
+    average_delay_days: float
+    max_delay_days: int
+    
+    # Journey health (from latest assessment)
+    latest_health_score: Optional[float]  # 0-100
+    health_dimensions: Dict[str, float]  # dimension_name -> score (0-100)
+    
+    # Longitudinal summary
+    longitudinal_summary: Dict[str, Any]
+
+
 class AnalyticsEngine:
     """
     Analytics engine for aggregating timeline progress and journey health.
@@ -85,75 +116,89 @@ class AnalyticsEngine:
     
     def aggregate(
         self,
-        user_id: UUID,
-        timeline_id: Optional[UUID] = None,
-        start_date: Optional[date] = None,
-        end_date: Optional[date] = None,
-    ) -> AnalyticsReport:
+        committed_timeline: CommittedTimeline,
+        progress_events: List[ProgressEvent],
+        latest_assessment: Optional[JourneyAssessment] = None,
+    ) -> AnalyticsSummary:
         """
         Aggregate timeline progress and journey health data.
         
-        Steps:
-        1. Collect timeline progress time-series
-        2. Collect journey health time-series
-        3. Compute status indicators
-        4. Generate summary
+        Rules:
+        - Deterministic only: Same inputs produce same outputs
+        - No predictions: Only aggregates historical data
+        - No ML: Pure mathematical calculations
+        
+        Logic:
+        1. Compute overall timeline status (on_track | delayed | completed)
+        2. Aggregate milestone completion percentage
+        3. Aggregate delay counts and overdue milestones
+        4. Aggregate journey health dimensions (from latest assessment)
+        5. Generate longitudinal summary object
         
         Args:
-            user_id: User ID
-            timeline_id: Optional committed timeline ID
-            start_date: Optional start date for aggregation (default: 6 months ago)
-            end_date: Optional end date for aggregation (default: today)
+            committed_timeline: CommittedTimeline object
+            progress_events: List of ProgressEvent objects
+            latest_assessment: Optional latest JourneyAssessment
             
         Returns:
-            AnalyticsReport with time-series summaries and status indicators
+            AnalyticsSummary with aggregated metrics
         """
-        # Set default date range (6 months if not specified)
-        if end_date is None:
-            end_date = date.today()
-        if start_date is None:
-            start_date = end_date - timedelta(days=180)  # 6 months
+        # Get all milestones for this timeline
+        stages = self.db.query(TimelineStage).filter(
+            TimelineStage.committed_timeline_id == committed_timeline.id
+        ).all()
         
-        # Step 1: Collect timeline progress time-series
-        timeline_series = self._aggregate_timeline_progress(
-            user_id=user_id,
-            timeline_id=timeline_id,
-            start_date=start_date,
-            end_date=end_date
+        milestones = []
+        for stage in stages:
+            stage_milestones = self.db.query(TimelineMilestone).filter(
+                TimelineMilestone.timeline_stage_id == stage.id
+            ).all()
+            milestones.extend(stage_milestones)
+        
+        # Step 1: Compute overall timeline status
+        timeline_status = self._compute_timeline_status(
+            committed_timeline=committed_timeline,
+            milestones=milestones,
+            progress_events=progress_events
         )
         
-        # Step 2: Collect journey health time-series
-        health_series = self._aggregate_journey_health(
-            user_id=user_id,
-            start_date=start_date,
-            end_date=end_date
+        # Step 2: Aggregate milestone completion percentage
+        completion_metrics = self._aggregate_milestone_completion(milestones)
+        
+        # Step 3: Aggregate delay counts and overdue milestones
+        delay_metrics = self._aggregate_delay_metrics(
+            milestones=milestones,
+            progress_events=progress_events
         )
         
-        # Step 3: Compute status indicators
-        status_indicators = self._compute_status_indicators(
-            user_id=user_id,
-            timeline_id=timeline_id,
-            timeline_series=timeline_series,
-            health_series=health_series
+        # Step 4: Aggregate journey health dimensions
+        health_metrics = self._aggregate_health_dimensions(latest_assessment)
+        
+        # Step 5: Generate longitudinal summary
+        longitudinal_summary = self._generate_longitudinal_summary(
+            committed_timeline=committed_timeline,
+            milestones=milestones,
+            progress_events=progress_events,
+            latest_assessment=latest_assessment
         )
         
-        # Step 4: Generate summary
-        summary = self._generate_summary(
-            timeline_series=timeline_series,
-            health_series=health_series,
-            status_indicators=status_indicators
-        )
-        
-        # Combine all time series
-        all_series = timeline_series + health_series
-        
-        return AnalyticsReport(
-            user_id=user_id,
-            timeline_id=timeline_id,
+        return AnalyticsSummary(
+            timeline_id=committed_timeline.id,
+            user_id=committed_timeline.user_id,
             generated_at=date.today(),
-            time_series=all_series,
-            status_indicators=status_indicators,
-            summary=summary
+            timeline_status=timeline_status,
+            milestone_completion_percentage=completion_metrics["completion_percentage"],
+            total_milestones=completion_metrics["total"],
+            completed_milestones=completion_metrics["completed"],
+            pending_milestones=completion_metrics["pending"],
+            total_delays=delay_metrics["total_delays"],
+            overdue_milestones=delay_metrics["overdue_count"],
+            overdue_critical_milestones=delay_metrics["overdue_critical_count"],
+            average_delay_days=delay_metrics["average_delay"],
+            max_delay_days=delay_metrics["max_delay"],
+            latest_health_score=health_metrics["overall_score"],
+            health_dimensions=health_metrics["dimensions"],
+            longitudinal_summary=longitudinal_summary
         )
     
     def _aggregate_timeline_progress(
@@ -636,3 +681,244 @@ class AnalyticsEngine:
                 summary["current_health_score"] = health.current_value
         
         return summary
+    
+    def _compute_timeline_status(
+        self,
+        committed_timeline: CommittedTimeline,
+        milestones: List[TimelineMilestone],
+        progress_events: List[ProgressEvent]
+    ) -> str:
+        """
+        Compute overall timeline status: on_track | delayed | completed.
+        
+        Rules:
+        - completed: All milestones are completed
+        - delayed: Any critical milestone is overdue OR >20% milestones overdue
+        - on_track: Otherwise
+        
+        Args:
+            committed_timeline: Committed timeline
+            milestones: List of milestones
+            progress_events: List of progress events
+            
+        Returns:
+            Status string: "on_track", "delayed", or "completed"
+        """
+        if not milestones:
+            return "on_track"
+        
+        # Check if all milestones are completed
+        all_completed = all(m.is_completed for m in milestones)
+        if all_completed:
+            return "completed"
+        
+        # Check for delays
+        today = date.today()
+        overdue_count = 0
+        overdue_critical_count = 0
+        
+        for milestone in milestones:
+            if milestone.target_date and not milestone.is_completed:
+                if milestone.target_date < today:
+                    overdue_count += 1
+                    if milestone.is_critical:
+                        overdue_critical_count += 1
+        
+        # Determine status
+        if overdue_critical_count > 0:
+            return "delayed"
+        
+        # More than 20% overdue
+        overdue_threshold = len(milestones) * 0.2
+        if overdue_count > overdue_threshold:
+            return "delayed"
+        
+        return "on_track"
+    
+    def _aggregate_milestone_completion(
+        self,
+        milestones: List[TimelineMilestone]
+    ) -> Dict[str, Any]:
+        """
+        Aggregate milestone completion metrics.
+        
+        Args:
+            milestones: List of milestones
+            
+        Returns:
+            Dictionary with completion metrics
+        """
+        if not milestones:
+            return {
+                "total": 0,
+                "completed": 0,
+                "pending": 0,
+                "completion_percentage": 0.0
+            }
+        
+        total = len(milestones)
+        completed = sum(1 for m in milestones if m.is_completed)
+        pending = total - completed
+        completion_percentage = (completed / total) * 100 if total > 0 else 0.0
+        
+        return {
+            "total": total,
+            "completed": completed,
+            "pending": pending,
+            "completion_percentage": round(completion_percentage, 1)
+        }
+    
+    def _aggregate_delay_metrics(
+        self,
+        milestones: List[TimelineMilestone],
+        progress_events: List[ProgressEvent]
+    ) -> Dict[str, Any]:
+        """
+        Aggregate delay counts and overdue milestones.
+        
+        Args:
+            milestones: List of milestones
+            progress_events: List of progress events
+            
+        Returns:
+            Dictionary with delay metrics
+        """
+        today = date.today()
+        delays = []
+        overdue_count = 0
+        overdue_critical_count = 0
+        
+        for milestone in milestones:
+            if milestone.target_date:
+                if milestone.is_completed and milestone.actual_completion_date:
+                    # Calculate delay for completed milestone
+                    delay_days = (milestone.actual_completion_date - milestone.target_date).days
+                    delays.append(delay_days)
+                elif not milestone.is_completed:
+                    # Check if overdue
+                    delay_days = (today - milestone.target_date).days
+                    if delay_days > 0:
+                        overdue_count += 1
+                        if milestone.is_critical:
+                            overdue_critical_count += 1
+                        delays.append(delay_days)
+        
+        total_delays = len(delays)
+        average_delay = sum(delays) / len(delays) if delays else 0.0
+        max_delay = max(delays) if delays else 0
+        
+        return {
+            "total_delays": total_delays,
+            "overdue_count": overdue_count,
+            "overdue_critical_count": overdue_critical_count,
+            "average_delay": round(average_delay, 1),
+            "max_delay": max_delay
+        }
+    
+    def _aggregate_health_dimensions(
+        self,
+        latest_assessment: Optional[JourneyAssessment]
+    ) -> Dict[str, Any]:
+        """
+        Aggregate journey health dimensions from latest assessment.
+        
+        Args:
+            latest_assessment: Latest journey assessment
+            
+        Returns:
+            Dictionary with health metrics
+        """
+        if not latest_assessment:
+            return {
+                "overall_score": None,
+                "dimensions": {}
+            }
+        
+        # Convert 1-10 scale to 0-100 for overall score
+        overall_score = None
+        if latest_assessment.overall_progress_rating is not None:
+            overall_score = (latest_assessment.overall_progress_rating / 10) * 100
+        
+        # Build dimensions dictionary
+        dimensions = {}
+        
+        if latest_assessment.research_quality_rating is not None:
+            dimensions["research_quality"] = (latest_assessment.research_quality_rating / 10) * 100
+        
+        if latest_assessment.timeline_adherence_rating is not None:
+            dimensions["timeline_adherence"] = (latest_assessment.timeline_adherence_rating / 10) * 100
+        
+        return {
+            "overall_score": round(overall_score, 1) if overall_score is not None else None,
+            "dimensions": dimensions
+        }
+    
+    def _generate_longitudinal_summary(
+        self,
+        committed_timeline: CommittedTimeline,
+        milestones: List[TimelineMilestone],
+        progress_events: List[ProgressEvent],
+        latest_assessment: Optional[JourneyAssessment]
+    ) -> Dict[str, Any]:
+        """
+        Generate longitudinal summary object.
+        
+        Args:
+            committed_timeline: Committed timeline
+            milestones: List of milestones
+            progress_events: List of progress events
+            latest_assessment: Latest journey assessment
+            
+        Returns:
+            Dictionary with longitudinal summary
+        """
+        today = date.today()
+        
+        # Timeline duration metrics
+        timeline_duration_days = None
+        elapsed_days = None
+        duration_progress_percentage = None
+        
+        if committed_timeline.committed_date and committed_timeline.target_completion_date:
+            timeline_duration_days = (committed_timeline.target_completion_date - committed_timeline.committed_date).days
+            elapsed_days = (today - committed_timeline.committed_date).days
+            if timeline_duration_days > 0:
+                duration_progress_percentage = (elapsed_days / timeline_duration_days) * 100
+        
+        # Event counts by type
+        event_counts = {}
+        for event in progress_events:
+            event_type = event.event_type
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+        
+        # Milestone completion timeline (first and last completion dates)
+        completed_milestones = [m for m in milestones if m.is_completed and m.actual_completion_date]
+        first_completion_date = None
+        last_completion_date = None
+        
+        if completed_milestones:
+            completion_dates = [m.actual_completion_date for m in completed_milestones]
+            first_completion_date = min(completion_dates)
+            last_completion_date = max(completion_dates)
+        
+        # Assessment info
+        assessment_info = None
+        if latest_assessment:
+            assessment_info = {
+                "assessment_date": latest_assessment.assessment_date.isoformat(),
+                "assessment_type": latest_assessment.assessment_type,
+                "overall_rating": latest_assessment.overall_progress_rating
+            }
+        
+        return {
+            "timeline_committed_date": committed_timeline.committed_date.isoformat() if committed_timeline.committed_date else None,
+            "target_completion_date": committed_timeline.target_completion_date.isoformat() if committed_timeline.target_completion_date else None,
+            "timeline_duration_days": timeline_duration_days,
+            "elapsed_days": elapsed_days,
+            "duration_progress_percentage": round(duration_progress_percentage, 1) if duration_progress_percentage else None,
+            "total_progress_events": len(progress_events),
+            "event_counts_by_type": event_counts,
+            "first_milestone_completion_date": first_completion_date.isoformat() if first_completion_date else None,
+            "last_milestone_completion_date": last_completion_date.isoformat() if last_completion_date else None,
+            "latest_assessment": assessment_info
+        }
