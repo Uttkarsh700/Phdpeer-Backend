@@ -2,24 +2,36 @@
  * Progress Service
  * 
  * Handles progress tracking and milestone completion API calls.
+ * 
+ * IMPORTANT: All API calls go through @/api/client (apiClient)
  */
 
-import { api } from './api.client';
+import { apiClient } from '@/api/client';
+import { ENDPOINTS } from '@/api/endpoints';
 import type { ProgressEvent } from '@/types/api';
 
 export const progressService = {
   /**
    * Mark milestone as completed
+   * 
+   * Calls POST /progress/complete (or POST /progress/milestones/:id/complete)
+   * Frontend does not calculate delays - backend provides all delay indicators.
    */
   completeMilestone: async (
     milestoneId: string,
     completionDate?: string,
     notes?: string
   ): Promise<{ eventId: string }> => {
-    return api.post(`/api/v1/progress/milestones/${milestoneId}/complete`, {
-      completionDate,
-      notes,
-    });
+    // Backend expects completion_date and notes
+    return apiClient.post<{ eventId: string; event_id?: string }>(
+      `${ENDPOINTS.PROGRESS.BASE}/milestones/${milestoneId}/complete`,
+      { 
+        completion_date: completionDate, 
+        notes 
+      }
+    ).then(response => ({
+      eventId: response.eventId || response.event_id || '',
+    }));
   },
 
   /**
@@ -35,7 +47,7 @@ export const progressService = {
     tags?: string;
     notes?: string;
   }): Promise<{ eventId: string }> => {
-    return api.post('/api/v1/progress/events', data);
+    return apiClient.post<{ eventId: string }>(`${ENDPOINTS.PROGRESS.BASE}/events`, data);
   },
 
   /**
@@ -53,7 +65,7 @@ export const progressService = {
     status: string;
     hasTargetDate: boolean;
   }> => {
-    return api.get(`/api/v1/progress/milestones/${milestoneId}/delay`);
+    return apiClient.get(`${ENDPOINTS.PROGRESS.BASE}/milestones/${milestoneId}/delay`);
   },
 
   /**
@@ -71,7 +83,7 @@ export const progressService = {
     averageDelayDays: number;
     hasMilestones: boolean;
   }> => {
-    return api.get(`/api/v1/progress/stages/${stageId}`);
+    return apiClient.get(`${ENDPOINTS.PROGRESS.BASE}/stages/${stageId}`);
   },
 
   /**
@@ -97,7 +109,7 @@ export const progressService = {
     maxDelayDays: number;
     hasData: boolean;
   }> => {
-    return api.get(`/api/v1/progress/timelines/${committedTimelineId}`);
+    return apiClient.get(ENDPOINTS.PROGRESS.GET_BY_TIMELINE(committedTimelineId));
   },
 
   /**
@@ -108,7 +120,11 @@ export const progressService = {
     eventType?: string,
     limit?: number
   ): Promise<ProgressEvent[]> => {
-    return api.get('/api/v1/progress/events', { milestoneId, eventType, limit });
+    return apiClient.get<ProgressEvent[]>(`${ENDPOINTS.PROGRESS.BASE}/events`, {
+      milestoneId,
+      eventType,
+      limit,
+    });
   },
 };
 

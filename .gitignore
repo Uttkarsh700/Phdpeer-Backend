@@ -71,6 +71,7 @@ coverage/
 # Logs
 logs/
 *.log
+.cursor/debug.log
 
 # OS
 Thumbs.db

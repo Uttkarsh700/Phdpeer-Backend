@@ -1,14 +1,21 @@
 /**
- * PhD Doctor Assessment Page
+ * PhD Doctor Questionnaire Page
  * 
- * Questionnaire for assessing PhD journey health across multiple dimensions.
- * Features: Save/resume progress, single submission, clear validation.
+ * Interactive questionnaire for assessing PhD journey health.
+ * 
+ * Behavior:
+ * - Auto-save via POST /doctor/save-draft
+ * - Submit via POST /doctor/submit
+ * - Render JourneyAssessment summary
+ * - Lock UI after submission
+ * - No access to timeline data
  */
 
-import { useState, useEffect, FormEvent } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { assessmentService } from '@/services';
-import type { QuestionnaireResponse } from '@/types/api';
+import { useGlobalStateActions } from '@/state/global';
+import type { AssessmentSummary, QuestionnaireResponse } from '@/types/api';
 
 interface Question {
   id: string;
@@ -17,16 +24,16 @@ interface Question {
   helpText?: string;
 }
 
-// Questionnaire structure
+// Questionnaire structure - matches backend dimensions
 const DIMENSIONS = [
   'RESEARCH_PROGRESS',
   'MENTAL_WELLBEING',
-  'SUPERVISOR_RELATIONSHIP',
-  'TIME_MANAGEMENT',
   'WORK_LIFE_BALANCE',
-  'ACADEMIC_SKILLS',
-  'FUNDING_STATUS',
+  'TIME_MANAGEMENT',
+  'SUPERVISOR_RELATIONSHIP',
   'PEER_SUPPORT',
+  'MOTIVATION',
+  'WRITING_PROGRESS',
 ] as const;
 
 const QUESTIONS: Question[] = [
@@ -42,107 +49,136 @@ const QUESTIONS: Question[] = [
   { id: 'mw3', dimension: 'MENTAL_WELLBEING', text: 'How well are you managing stress and anxiety?', helpText: '1 = Very poorly, 5 = Very well' },
   { id: 'mw4', dimension: 'MENTAL_WELLBEING', text: 'How motivated do you feel about your PhD?', helpText: '1 = Not motivated, 5 = Highly motivated' },
   
-  // Supervisor Relationship
-  { id: 'sr1', dimension: 'SUPERVISOR_RELATIONSHIP', text: 'How satisfied are you with your supervisor relationship?', helpText: '1 = Very dissatisfied, 5 = Very satisfied' },
-  { id: 'sr2', dimension: 'SUPERVISOR_RELATIONSHIP', text: 'How often do you receive helpful feedback from your supervisor?', helpText: '1 = Never, 5 = Very frequently' },
-  { id: 'sr3', dimension: 'SUPERVISOR_RELATIONSHIP', text: 'How accessible is your supervisor when you need guidance?', helpText: '1 = Not accessible, 5 = Very accessible' },
-  { id: 'sr4', dimension: 'SUPERVISOR_RELATIONSHIP', text: 'How clear are expectations from your supervisor?', helpText: '1 = Very unclear, 5 = Very clear' },
+  // Work-Life Balance
+  { id: 'wlb1', dimension: 'WORK_LIFE_BALANCE', text: 'How satisfied are you with your work-life balance?', helpText: '1 = Very dissatisfied, 5 = Very satisfied' },
+  { id: 'wlb2', dimension: 'WORK_LIFE_BALANCE', text: 'How often do you take time for non-PhD activities?', helpText: '1 = Never, 5 = Regularly' },
+  { id: 'wlb3', dimension: 'WORK_LIFE_BALANCE', text: 'How supported do you feel by family and friends?', helpText: '1 = Not supported, 5 = Very supported' },
   
   // Time Management
   { id: 'tm1', dimension: 'TIME_MANAGEMENT', text: 'How well do you manage your time and priorities?', helpText: '1 = Very poorly, 5 = Very well' },
   { id: 'tm2', dimension: 'TIME_MANAGEMENT', text: 'How often do you meet your own deadlines?', helpText: '1 = Never, 5 = Always' },
   { id: 'tm3', dimension: 'TIME_MANAGEMENT', text: 'How organized is your research workflow?', helpText: '1 = Very disorganized, 5 = Very organized' },
   
-  // Work-Life Balance
-  { id: 'wlb1', dimension: 'WORK_LIFE_BALANCE', text: 'How satisfied are you with your work-life balance?', helpText: '1 = Very dissatisfied, 5 = Very satisfied' },
-  { id: 'wlb2', dimension: 'WORK_LIFE_BALANCE', text: 'How often do you take time for non-PhD activities?', helpText: '1 = Never, 5 = Regularly' },
-  { id: 'wlb3', dimension: 'WORK_LIFE_BALANCE', text: 'How supported do you feel by family and friends?', helpText: '1 = Not supported, 5 = Very supported' },
-  
-  // Academic Skills
-  { id: 'as1', dimension: 'ACADEMIC_SKILLS', text: 'How confident are you in your research methods and skills?', helpText: '1 = Not confident, 5 = Very confident' },
-  { id: 'as2', dimension: 'ACADEMIC_SKILLS', text: 'How comfortable are you with academic writing?', helpText: '1 = Very uncomfortable, 5 = Very comfortable' },
-  { id: 'as3', dimension: 'ACADEMIC_SKILLS', text: 'How prepared do you feel for presenting your research?', helpText: '1 = Not prepared, 5 = Very prepared' },
-  
-  // Funding Status
-  { id: 'fs1', dimension: 'FUNDING_STATUS', text: 'How secure is your current funding situation?', helpText: '1 = Very insecure, 5 = Very secure' },
-  { id: 'fs2', dimension: 'FUNDING_STATUS', text: 'How concerned are you about financial matters?', helpText: '1 = Extremely concerned, 5 = Not concerned' },
+  // Supervisor Relationship
+  { id: 'sr1', dimension: 'SUPERVISOR_RELATIONSHIP', text: 'How satisfied are you with your supervisor relationship?', helpText: '1 = Very dissatisfied, 5 = Very satisfied' },
+  { id: 'sr2', dimension: 'SUPERVISOR_RELATIONSHIP', text: 'How often do you receive helpful feedback from your supervisor?', helpText: '1 = Never, 5 = Very frequently' },
+  { id: 'sr3', dimension: 'SUPERVISOR_RELATIONSHIP', text: 'How accessible is your supervisor when you need guidance?', helpText: '1 = Not accessible, 5 = Very accessible' },
+  { id: 'sr4', dimension: 'SUPERVISOR_RELATIONSHIP', text: 'How clear are expectations from your supervisor?', helpText: '1 = Very unclear, 5 = Very clear' },
   
   // Peer Support
   { id: 'ps1', dimension: 'PEER_SUPPORT', text: 'How connected do you feel with fellow PhD students?', helpText: '1 = Very isolated, 5 = Very connected' },
   { id: 'ps2', dimension: 'PEER_SUPPORT', text: 'How often do you receive support from peers?', helpText: '1 = Never, 5 = Very often' },
   { id: 'ps3', dimension: 'PEER_SUPPORT', text: 'How integrated do you feel in your academic community?', helpText: '1 = Not integrated, 5 = Very integrated' },
+  
+  // Motivation
+  { id: 'm1', dimension: 'MOTIVATION', text: 'How motivated are you to continue your PhD journey?', helpText: '1 = Not motivated, 5 = Highly motivated' },
+  { id: 'm2', dimension: 'MOTIVATION', text: 'How excited are you about your research topic?', helpText: '1 = Not excited, 5 = Very excited' },
+  
+  // Writing Progress
+  { id: 'wp1', dimension: 'WRITING_PROGRESS', text: 'How satisfied are you with your writing progress?', helpText: '1 = Very dissatisfied, 5 = Very satisfied' },
+  { id: 'wp2', dimension: 'WRITING_PROGRESS', text: 'How confident are you in your academic writing skills?', helpText: '1 = Not confident, 5 = Very confident' },
 ];
 
 const DIMENSION_LABELS: Record<string, string> = {
   RESEARCH_PROGRESS: 'Research Progress',
   MENTAL_WELLBEING: 'Mental Wellbeing',
-  SUPERVISOR_RELATIONSHIP: 'Supervisor Relationship',
-  TIME_MANAGEMENT: 'Time Management',
   WORK_LIFE_BALANCE: 'Work-Life Balance',
-  ACADEMIC_SKILLS: 'Academic Skills',
-  FUNDING_STATUS: 'Funding Status',
+  TIME_MANAGEMENT: 'Time Management',
+  SUPERVISOR_RELATIONSHIP: 'Supervisor Relationship',
   PEER_SUPPORT: 'Peer Support',
+  MOTIVATION: 'Motivation',
+  WRITING_PROGRESS: 'Writing Progress',
 };
-
-const STORAGE_KEY = 'phd_doctor_draft';
 
 export function Component() {
   const navigate = useNavigate();
+  const { setDoctorStatus } = useGlobalStateActions();
 
   // Form state
   const [responses, setResponses] = useState<Map<string, number>>(new Map());
   const [notes, setNotes] = useState('');
   const [currentDimension, setCurrentDimension] = useState(0);
+  const [draftId, setDraftId] = useState<string | null>(null);
 
   // UI state
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
-  const [hasLoadedDraft, setHasLoadedDraft] = useState(false);
+  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [assessmentSummary, setAssessmentSummary] = useState<AssessmentSummary | null>(null);
 
-  // Load saved draft on mount
-  useEffect(() => {
-    const savedDraft = localStorage.getItem(STORAGE_KEY);
-    if (savedDraft) {
-      try {
-        const draft = JSON.parse(savedDraft);
-        const loadedResponses = new Map(Object.entries(draft.responses).map(([k, v]) => [k, Number(v)]));
-        setResponses(loadedResponses);
-        setNotes(draft.notes || '');
-        setCurrentDimension(draft.currentDimension || 0);
-        setHasLoadedDraft(true);
-        setSaveMessage('Draft loaded. Continue where you left off!');
-        setTimeout(() => setSaveMessage(null), 3000);
-      } catch (err) {
-        console.error('Failed to load draft:', err);
-      }
-    }
-  }, []);
+  // Auto-save timer ref
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSaveRef = useRef<Map<string, number>>(new Map());
 
-  // Save draft to localStorage
-  const saveDraft = () => {
+  /**
+   * Auto-save draft via POST /doctor/save-draft
+   * 
+   * Debounced to avoid excessive API calls.
+   */
+  const autoSaveDraft = useCallback(async () => {
+    if (isSubmitted || responses.size === 0) return;
+
+    // Check if responses have changed
+    const hasChanges = Array.from(responses.entries()).some(
+      ([id, value]) => lastSaveRef.current.get(id) !== value
+    );
+
+    if (!hasChanges) return;
+
+    setSaving(true);
+    setError(null);
+
     try {
-      const draft = {
-        responses: Object.fromEntries(responses),
-        notes,
-        currentDimension,
-        savedAt: new Date().toISOString(),
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
-      setSaveMessage('Progress saved!');
-      setTimeout(() => setSaveMessage(null), 2000);
-    } catch (err) {
-      console.error('Failed to save draft:', err);
-      setError('Failed to save progress');
-    }
-  };
+      const questionnaireResponses = Array.from(responses.entries())
+        .map(([questionId, value]) => {
+          const question = QUESTIONS.find(q => q.id === questionId)!;
+          return {
+            dimension: question.dimension,
+            question_id: questionId,
+            response_value: value,
+            question_text: question.text,
+          };
+        });
 
-  // Clear draft from localStorage
-  const clearDraft = () => {
-    localStorage.removeItem(STORAGE_KEY);
-  };
+      const result = await assessmentService.saveDraft({
+        responses: questionnaireResponses,
+        notes: notes || undefined,
+      });
+
+      setDraftId(result.draftId);
+      lastSaveRef.current = new Map(responses);
+      setSaveMessage('Progress saved');
+      setTimeout(() => setSaveMessage(null), 2000);
+    } catch (err: any) {
+      // Silent fail for auto-save - don't show error to user
+      console.error('Auto-save failed:', err);
+    } finally {
+      setSaving(false);
+    }
+  }, [responses, notes, isSubmitted]);
+
+  // Auto-save on response change (debounced)
+  useEffect(() => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+
+    autoSaveTimerRef.current = setTimeout(() => {
+      autoSaveDraft();
+    }, 2000); // 2 second debounce
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, [responses, notes, autoSaveDraft]);
 
   const handleResponseChange = (questionId: string, value: number) => {
+    if (isSubmitted) return; // Lock UI after submission
+
     const newResponses = new Map(responses);
     newResponses.set(questionId, value);
     setResponses(newResponses);
@@ -170,7 +206,6 @@ export function Component() {
   const handleNext = () => {
     if (currentDimension < DIMENSIONS.length - 1) {
       setCurrentDimension(currentDimension + 1);
-      saveDraft();
     }
   };
 
@@ -180,12 +215,17 @@ export function Component() {
     }
   };
 
-  const handleSubmit = async (e: FormEvent) => {
+  /**
+   * Submit questionnaire via POST /doctor/submit
+   * 
+   * Locks UI and renders JourneyAssessment summary.
+   */
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Validate all questions answered
-    if (responses.size < QUESTIONS.length) {
-      setError('Please answer all questions before submitting');
+    // Validate minimum 5 responses
+    if (responses.size < 5) {
+      setError('Please answer at least 5 questions before submitting');
       return;
     }
 
@@ -203,17 +243,20 @@ export function Component() {
         };
       });
 
+      // Call POST /doctor/submit
       const summary = await assessmentService.submitQuestionnaire({
         responses: questionnaireResponses,
         assessmentType: 'self_assessment',
         notes: notes || undefined,
+        draftId: draftId || undefined,
       });
 
-      // Clear draft after successful submission
-      clearDraft();
+      // Lock UI after submission
+      setIsSubmitted(true);
+      setAssessmentSummary(summary);
 
-      // Navigate to results page
-      navigate(`/health/${summary.assessmentId}`);
+      // Update global state - doctor status is now SUBMITTED
+      setDoctorStatus('SUBMITTED');
     } catch (err: any) {
       setError(err.message || 'Failed to submit assessment');
     } finally {
@@ -226,6 +269,179 @@ export function Component() {
   const isLastDimension = currentDimension === DIMENSIONS.length - 1;
   const canProceed = isDimensionComplete(currentDimension);
 
+  // Render assessment summary if submitted
+  if (isSubmitted && assessmentSummary) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        {/* Header */}
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold text-gray-900">Assessment Submitted</h1>
+          <p className="mt-2 text-gray-600">
+            Your PhD journey health assessment has been submitted successfully.
+          </p>
+        </div>
+
+        {/* Locked Notice */}
+        <div className="mb-6 bg-green-50 border-2 border-green-300 rounded-lg p-4">
+          <div className="flex">
+            <div className="flex-shrink-0">
+              <svg className="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+              </svg>
+            </div>
+            <div className="ml-3">
+              <h3 className="text-sm font-semibold text-green-800">Assessment Locked</h3>
+              <p className="mt-1 text-sm text-green-700">
+                This assessment has been submitted and cannot be modified. View your results below.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* JourneyAssessment Summary */}
+        <div className="space-y-6">
+          {/* Overall Score */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">Overall Assessment</h2>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-4xl font-bold text-blue-600 mb-2">
+                  {Math.round(assessmentSummary.overallScore)}/100
+                </div>
+                <div className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
+                  assessmentSummary.overallStatus === 'excellent' ? 'bg-green-100 text-green-800' :
+                  assessmentSummary.overallStatus === 'good' ? 'bg-blue-100 text-blue-800' :
+                  assessmentSummary.overallStatus === 'fair' ? 'bg-yellow-100 text-yellow-800' :
+                  assessmentSummary.overallStatus === 'concerning' ? 'bg-orange-100 text-orange-800' :
+                  'bg-red-100 text-red-800'
+                }`}>
+                  {assessmentSummary.overallStatus.toUpperCase()}
+                </div>
+              </div>
+              <div className="text-right text-sm text-gray-600">
+                <div>Date: {new Date(assessmentSummary.assessmentDate).toLocaleDateString()}</div>
+                <div>{assessmentSummary.totalResponses} responses</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Summary Text */}
+          {assessmentSummary.summary && (
+            <div className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">Summary</h2>
+              <p className="text-gray-700 whitespace-pre-wrap">{assessmentSummary.summary}</p>
+            </div>
+          )}
+
+          {/* Critical Areas */}
+          {assessmentSummary.criticalAreas.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+              <h2 className="text-xl font-semibold text-red-900 mb-4">Areas Needing Attention</h2>
+              <div className="space-y-4">
+                {assessmentSummary.criticalAreas.map((area, index) => (
+                  <div key={index} className="bg-white rounded p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-semibold text-gray-900">{area.dimension}</h3>
+                      <span className="text-sm font-medium text-red-600">Score: {Math.round(area.score)}/100</span>
+                    </div>
+                    {area.concerns.length > 0 && (
+                      <ul className="list-disc list-inside text-sm text-gray-700 mt-2">
+                        {area.concerns.map((concern, i) => (
+                          <li key={i}>{concern}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Healthy Areas */}
+          {assessmentSummary.healthyAreas.length > 0 && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-6">
+              <h2 className="text-xl font-semibold text-green-900 mb-4">Strengths</h2>
+              <div className="space-y-4">
+                {assessmentSummary.healthyAreas.map((area, index) => (
+                  <div key={index} className="bg-white rounded p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-semibold text-gray-900">{area.dimension}</h3>
+                      <span className="text-sm font-medium text-green-600">Score: {Math.round(area.score)}/100</span>
+                    </div>
+                    {area.strengths.length > 0 && (
+                      <ul className="list-disc list-inside text-sm text-gray-700 mt-2">
+                        {area.strengths.map((strength, i) => (
+                          <li key={i}>{strength}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Recommendations */}
+          {assessmentSummary.recommendations.length > 0 && (
+            <div className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">Recommendations</h2>
+              <div className="space-y-4">
+                {assessmentSummary.recommendations.map((rec, index) => (
+                  <div key={index} className={`border-l-4 p-4 ${
+                    rec.priority === 'high' ? 'border-red-500 bg-red-50' :
+                    rec.priority === 'medium' ? 'border-yellow-500 bg-yellow-50' :
+                    'border-blue-500 bg-blue-50'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-semibold text-gray-900">{rec.title}</h3>
+                      <span className={`text-xs font-medium px-2 py-1 rounded ${
+                        rec.priority === 'high' ? 'bg-red-100 text-red-800' :
+                        rec.priority === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-blue-100 text-blue-800'
+                      }`}>
+                        {rec.priority.toUpperCase()} PRIORITY
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700 mb-2">{rec.description}</p>
+                    {rec.actionItems.length > 0 && (
+                      <ul className="list-disc list-inside text-sm text-gray-600 mt-2">
+                        {rec.actionItems.map((item, i) => (
+                          <li key={i}>{item}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Dimension Scores */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">Dimension Scores</h2>
+            <div className="grid grid-cols-2 gap-4">
+              {Object.entries(assessmentSummary.dimensions).map(([dimension, data]) => (
+                <div key={dimension} className="border border-gray-200 rounded p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-medium text-gray-900">{DIMENSION_LABELS[dimension] || dimension}</h3>
+                    <span className="text-sm font-semibold text-blue-600">{Math.round(data.score)}/100</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div
+                      className="bg-blue-600 h-2 rounded-full"
+                      style={{ width: `${data.score}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Render questionnaire form
   return (
     <div className="max-w-4xl mx-auto">
       {/* Header */}
@@ -241,7 +457,15 @@ export function Component() {
       <div className="bg-white rounded-lg shadow p-6 mb-6">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-lg font-semibold text-gray-900">Overall Progress</h3>
-          <span className="text-2xl font-bold text-blue-600">{stats.percentage}%</span>
+          <div className="flex items-center space-x-3">
+            {saving && (
+              <span className="text-sm text-gray-500">Saving...</span>
+            )}
+            {saveMessage && (
+              <span className="text-sm text-green-600">{saveMessage}</span>
+            )}
+            <span className="text-2xl font-bold text-blue-600">{stats.percentage}%</span>
+          </div>
         </div>
         <div className="w-full bg-gray-200 rounded-full h-3">
           <div
@@ -253,13 +477,6 @@ export function Component() {
           {stats.answered} of {stats.total} questions answered
         </p>
       </div>
-
-      {/* Save Message */}
-      {saveMessage && (
-        <div className="mb-4 bg-green-50 border border-green-200 rounded-lg p-3">
-          <p className="text-sm text-green-800">{saveMessage}</p>
-        </div>
-      )}
 
       {/* Error Message */}
       {error && (
@@ -286,13 +503,14 @@ export function Component() {
               <button
                 key={index}
                 onClick={() => setCurrentDimension(index)}
+                disabled={isSubmitted}
                 className={`w-3 h-3 rounded-full transition-colors ${
                   index === currentDimension
                     ? 'bg-blue-600 ring-2 ring-blue-200'
                     : isDimensionComplete(index)
                     ? 'bg-green-600'
                     : 'bg-gray-300'
-                }`}
+                } ${isSubmitted ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                 title={DIMENSION_LABELS[DIMENSIONS[index]]}
               />
             ))}
@@ -323,11 +541,12 @@ export function Component() {
                             key={rating}
                             type="button"
                             onClick={() => handleResponseChange(question.id, rating)}
+                            disabled={isSubmitted}
                             className={`flex-1 py-3 px-4 rounded-lg border-2 text-center font-semibold transition-all ${
                               value === rating
                                 ? 'border-blue-600 bg-blue-600 text-white'
                                 : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400 hover:bg-gray-50'
-                            }`}
+                            } ${isSubmitted ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                           >
                             {rating}
                           </button>
@@ -356,9 +575,10 @@ export function Component() {
                 </span>
                 <textarea
                   value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
+                  onChange={(e) => !isSubmitted && setNotes(e.target.value)}
+                  disabled={isSubmitted}
                   rows={4}
-                  className="mt-3 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="mt-3 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   placeholder="Your comments here..."
                 />
               </label>
@@ -372,18 +592,12 @@ export function Component() {
                 <button
                   type="button"
                   onClick={handlePrevious}
-                  className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={isSubmitted}
+                  className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   ← Previous
                 </button>
               )}
-              <button
-                type="button"
-                onClick={saveDraft}
-                className="px-4 py-2 text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                💾 Save Progress
-              </button>
             </div>
 
             <div>
@@ -391,7 +605,7 @@ export function Component() {
                 <button
                   type="button"
                   onClick={handleNext}
-                  disabled={!canProceed}
+                  disabled={!canProceed || isSubmitted}
                   className="px-6 py-2 text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Next →
@@ -399,7 +613,7 @@ export function Component() {
               ) : (
                 <button
                   type="submit"
-                  disabled={loading || responses.size < QUESTIONS.length}
+                  disabled={loading || responses.size < 5 || isSubmitted}
                   className="px-8 py-2 text-white bg-green-600 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loading ? 'Submitting...' : 'Submit Assessment'}

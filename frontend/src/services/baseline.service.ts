@@ -2,9 +2,12 @@
  * Baseline Service
  * 
  * Handles baseline creation and management API calls.
+ * 
+ * IMPORTANT: All API calls go through @/api/client (apiClient)
  */
 
-import { api } from './api.client';
+import { apiClient } from '@/api/client';
+import { ENDPOINTS } from '@/api/endpoints';
 import type { Baseline, CreateBaselineRequest } from '@/types/api';
 
 export const baselineService = {
@@ -12,21 +15,21 @@ export const baselineService = {
    * Create a baseline
    */
   create: async (data: CreateBaselineRequest): Promise<{ baselineId: string }> => {
-    return api.post('/api/v1/baselines', data);
+    return apiClient.post<{ baselineId: string }>(ENDPOINTS.BASELINES.CREATE, data);
   },
 
   /**
    * Get baseline by ID
    */
   getById: async (baselineId: string): Promise<Baseline> => {
-    return api.get(`/api/v1/baselines/${baselineId}`);
+    return apiClient.get<Baseline>(ENDPOINTS.BASELINES.GET_BY_ID(baselineId));
   },
 
   /**
    * Get user's baselines
    */
   getUserBaselines: async (skip?: number, limit?: number): Promise<Baseline[]> => {
-    return api.get('/api/v1/baselines', { skip, limit });
+    return apiClient.get<Baseline[]>(ENDPOINTS.BASELINES.LIST, { skip, limit });
   },
 
   /**
@@ -36,14 +39,14 @@ export const baselineService = {
     baseline: Baseline;
     document: any;
   }> => {
-    return api.get(`/api/v1/baselines/${baselineId}/with-document`);
+    return apiClient.get(`${ENDPOINTS.BASELINES.GET_BY_ID(baselineId)}/with-document`);
   },
 
   /**
    * Delete baseline
    */
   delete: async (baselineId: string): Promise<void> => {
-    return api.delete(`/api/v1/baselines/${baselineId}`);
+    return apiClient.delete<void>(ENDPOINTS.BASELINES.DELETE(baselineId));
   },
 };
 

@@ -2,9 +2,15 @@
  * Assessment Service
  * 
  * Handles journey health assessment API calls.
+ * 
+ * IMPORTANT: 
+ * - All endpoints are defined in @/api/endpoints.ts
+ * - All API calls go through @/api/client (apiClient)
+ * - Never hardcode API paths or use direct fetch/axios calls
  */
 
-import { api } from './api.client';
+import { apiClient } from '@/api/client';
+import { ENDPOINTS } from '@/api/endpoints';
 import type {
   JourneyAssessment,
   AssessmentSummary,
@@ -13,26 +19,65 @@ import type {
 
 export const assessmentService = {
   /**
+   * Save questionnaire draft
+   * 
+   * Calls POST /doctor/save-draft
+   * Auto-saves responses without submitting.
+   */
+  saveDraft: async (data: {
+    responses: Array<{
+      dimension: string;
+      question_id: string;
+      response_value: number;
+      question_text?: string;
+    }>;
+    notes?: string;
+  }): Promise<{ draftId: string }> => {
+    return apiClient.post<{ draftId: string; draft_id?: string }>(
+      ENDPOINTS.DOCTOR.SAVE_DRAFT,
+      data
+    ).then(response => ({
+      draftId: response.draftId || response.draft_id || '',
+    }));
+  },
+
+  /**
    * Submit questionnaire and get assessment
+   * 
+   * Calls POST /doctor/submit
+   * Returns JourneyAssessment summary.
    */
   submitQuestionnaire: async (
-    data: SubmitQuestionnaireRequest
+    data: SubmitQuestionnaireRequest & { draftId?: string }
   ): Promise<AssessmentSummary> => {
-    return api.post('/api/v1/assessments/submit', data);
+    // Backend expects draft_id if provided
+    const payload: any = {
+      responses: data.responses.map(r => ({
+        dimension: r.dimension,
+        question_id: r.questionId,
+        response_value: r.responseValue,
+        question_text: r.questionText,
+      })),
+      assessment_type: data.assessmentType || 'self_assessment',
+      ...(data.notes && { notes: data.notes }),
+      ...(data.draftId && { draft_id: data.draftId }),
+    };
+    
+    return apiClient.post<AssessmentSummary>(ENDPOINTS.DOCTOR.SUBMIT, payload);
   },
 
   /**
    * Get assessment by ID
    */
   getById: async (assessmentId: string): Promise<JourneyAssessment> => {
-    return api.get(`/api/v1/assessments/${assessmentId}`);
+    return apiClient.get<JourneyAssessment>(ENDPOINTS.ASSESSMENTS.GET_BY_ID(assessmentId));
   },
 
   /**
    * Get latest assessment
    */
   getLatest: async (): Promise<JourneyAssessment | null> => {
-    return api.get('/api/v1/assessments/latest');
+    return apiClient.get<JourneyAssessment | null>(ENDPOINTS.ASSESSMENTS.GET_LATEST);
   },
 
   /**
@@ -42,7 +87,10 @@ export const assessmentService = {
     assessmentType?: string,
     limit?: number
   ): Promise<JourneyAssessment[]> => {
-    return api.get('/api/v1/assessments/history', { assessmentType, limit });
+    return apiClient.get<JourneyAssessment[]>(ENDPOINTS.ASSESSMENTS.GET_HISTORY, {
+      assessmentType,
+      limit,
+    });
   },
 
   /**
@@ -62,7 +110,7 @@ export const assessmentService = {
     improvement: boolean;
     percentageChange: number;
   }> => {
-    return api.get('/api/v1/assessments/compare', {
+    return apiClient.get(ENDPOINTS.ASSESSMENTS.COMPARE, {
       assessmentId1,
       assessmentId2,
     });

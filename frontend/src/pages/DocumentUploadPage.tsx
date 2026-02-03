@@ -1,15 +1,26 @@
 /**
  * Document Upload Page
  * 
- * Allows users to upload PDF/DOCX documents and provide context.
+ * Allows users to upload PDF/DOCX documents and create baselines.
+ * 
+ * Behavior:
+ * - Upload document
+ * - Call POST /baseline/create
+ * - On success, update global state
+ * - Transition screen based on backend response
+ * 
+ * No optimistic UI - waits for actual API response.
  */
 
 import { useState, FormEvent, ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { documentService, baselineService } from '@/services';
+import { useGlobalStateActions, useGlobalStateStore } from '@/state/global';
+import { getRouteFromState } from '@/state/navigation';
 
 export function Component() {
   const navigate = useNavigate();
+  const { setBaselineStatus } = useGlobalStateActions();
   
   // File state
   const [file, setFile] = useState<File | null>(null);
@@ -20,8 +31,7 @@ export function Component() {
   const [description, setDescription] = useState('');
   const [documentType, setDocumentType] = useState('PhD_PROPOSAL');
   
-  // Context form state
-  const [createBaseline, setCreateBaseline] = useState(true);
+  // Baseline form state (always create baseline - this is the upload screen)
   const [programName, setProgramName] = useState('');
   const [institution, setInstitution] = useState('');
   const [fieldOfStudy, setFieldOfStudy] = useState('');
@@ -32,7 +42,6 @@ export function Component() {
   // UI state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -62,7 +71,8 @@ export function Component() {
       return;
     }
     
-    if (createBaseline && (!programName || !institution || !fieldOfStudy || !startDate)) {
+    // Validate required baseline fields
+    if (!programName || !institution || !fieldOfStudy || !startDate) {
       setError('Please fill in all required baseline fields');
       return;
     }
@@ -73,6 +83,7 @@ export function Component() {
 
     try {
       // Step 1: Upload document
+      // No optimistic UI - wait for actual response
       const { documentId } = await documentService.upload(
         file,
         title,
@@ -81,38 +92,30 @@ export function Component() {
         (progress) => setUploadProgress(progress)
       );
 
-      console.log('Document uploaded:', documentId);
+      // Step 2: Create baseline
+      // No optimistic UI - wait for actual response
+      const result = await baselineService.create({
+        documentId,
+        programName,
+        institution,
+        fieldOfStudy,
+        startDate,
+        expectedEndDate: expectedEndDate || undefined,
+        researchArea: researchArea || undefined,
+      });
 
-      // Step 2: Create baseline if requested
-      if (createBaseline) {
-        const { baselineId } = await baselineService.create({
-          documentId,
-          programName,
-          institution,
-          fieldOfStudy,
-          startDate,
-          expectedEndDate: expectedEndDate || undefined,
-          researchArea: researchArea || undefined,
-        });
+      // Step 3: Update global state from API response
+      // Baseline was successfully created
+      setBaselineStatus('EXISTS');
 
-        console.log('Baseline created:', baselineId);
-        
-        setSuccess(true);
-        
-        // Navigate to baseline detail page
-        setTimeout(() => {
-          navigate(`/baselines/${baselineId}`);
-        }, 1500);
-      } else {
-        setSuccess(true);
-        
-        // Navigate to document detail page
-        setTimeout(() => {
-          navigate(`/documents/${documentId}`);
-        }, 1500);
-      }
+      // Step 4: Transition screen based on backend response
+      // Get current state and navigate to appropriate screen
+      const state = useGlobalStateStore.getState();
+      const validRoute = getRouteFromState(state);
+      navigate(validRoute, { replace: true });
     } catch (err: any) {
-      setError(err.message || 'Failed to upload document');
+      // Handle error - don't update state on error
+      setError(err.message || 'Failed to upload document or create baseline');
       setUploadProgress(0);
     } finally {
       setLoading(false);
@@ -208,22 +211,14 @@ export function Component() {
 
         {/* Baseline Context Section */}
         <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">Create Baseline</h2>
-            <label className="flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={createBaseline}
-                onChange={(e) => setCreateBaseline(e.target.checked)}
-                className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                disabled={loading}
-              />
-              <span className="text-sm text-gray-700">Create baseline from this document</span>
-            </label>
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-gray-900">Baseline Information</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Provide information about your PhD program to create a baseline
+            </p>
           </div>
 
-          {createBaseline && (
-            <div className="space-y-4 pt-4 border-t border-gray-200">
+          <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -235,7 +230,7 @@ export function Component() {
                     onChange={(e) => setProgramName(e.target.value)}
                     placeholder="e.g., PhD in Computer Science"
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required={createBaseline}
+                    required
                     disabled={loading}
                   />
                 </div>
@@ -250,7 +245,7 @@ export function Component() {
                     onChange={(e) => setInstitution(e.target.value)}
                     placeholder="e.g., Stanford University"
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required={createBaseline}
+                    required
                     disabled={loading}
                   />
                 </div>
@@ -266,7 +261,7 @@ export function Component() {
                   onChange={(e) => setFieldOfStudy(e.target.value)}
                   placeholder="e.g., Machine Learning, Quantum Computing"
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required={createBaseline}
+                  required
                   disabled={loading}
                 />
               </div>
@@ -281,7 +276,7 @@ export function Component() {
                     value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required={createBaseline}
+                    required
                     disabled={loading}
                   />
                 </div>
@@ -313,8 +308,7 @@ export function Component() {
                   disabled={loading}
                 />
               </div>
-            </div>
-          )}
+          </div>
         </div>
 
         {/* Upload Progress */}
@@ -340,16 +334,6 @@ export function Component() {
           </div>
         )}
 
-        {/* Success Message */}
-        {success && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-            <p className="text-sm text-green-800">
-              {createBaseline 
-                ? 'Document uploaded and baseline created successfully! Redirecting...'
-                : 'Document uploaded successfully! Redirecting...'}
-            </p>
-          </div>
-        )}
 
         {/* Submit Button */}
         <div className="flex items-center justify-end space-x-4">
@@ -366,7 +350,7 @@ export function Component() {
             className="px-6 py-2 text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading || !file}
           >
-            {loading ? 'Uploading...' : createBaseline ? 'Upload & Create Baseline' : 'Upload Document'}
+            {loading ? 'Uploading & Creating Baseline...' : 'Upload Document & Create Baseline'}
           </button>
         </div>
       </form>

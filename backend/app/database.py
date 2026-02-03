@@ -46,8 +46,17 @@ def get_db() -> Generator[Session, None, None]:
         def read_items(db: Session = Depends(get_db)):
             return db.query(Item).all()
     """
+    # #region agent log
+    import json
+    with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"database.py:49","message":"Creating database session","data":{"database_url":settings.DATABASE_URL[:50] if hasattr(settings, 'DATABASE_URL') else 'NOT_SET'},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+    # #endregion
     db = SessionLocal()
     try:
+        # #region agent log
+        with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"database.py:52","message":"Database session created successfully","data":{},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         yield db
     finally:
         db.close()

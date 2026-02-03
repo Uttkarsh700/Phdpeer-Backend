@@ -65,6 +65,10 @@ export const router = createBrowserRouter([
             lazy: () => import('@/pages/TimelinesPage'),
           },
           {
+            path: 'generate',
+            lazy: () => import('@/pages/DraftTimelinePage'),
+          },
+          {
             path: 'draft/:draftId',
             lazy: () => import('@/pages/DraftTimelinePage'),
           },

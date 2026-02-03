@@ -33,4 +33,17 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+try:
+    settings = Settings()
+    # #region agent log
+    import json
+    with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"config.py:36","message":"Settings loaded","data":{"has_database_url":hasattr(settings, 'DATABASE_URL'),"has_secret_key":hasattr(settings, 'SECRET_KEY'),"database_url_set":bool(getattr(settings, 'DATABASE_URL', None))},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+    # #endregion
+except Exception as e:
+    # #region agent log
+    import json
+    with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"config.py:36","message":"Settings load failed","data":{"error":str(e),"error_type":type(e).__name__},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+    # #endregion
+    raise

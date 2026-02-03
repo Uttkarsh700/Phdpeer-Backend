@@ -42,6 +42,11 @@ async def get_analytics_summary(
     Raises:
         HTTPException: If analytics generation fails
     """
+    # #region agent log
+    import json
+    with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"analytics.py:45","message":"Endpoint called","data":{"user_id":str(user_id),"timeline_id":str(timeline_id) if timeline_id else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+    # #endregion
     try:
         # Get committed timeline to determine version
         if timeline_id:
@@ -55,12 +60,23 @@ async def get_analytics_summary(
                     detail=f"Timeline {timeline_id} not found or not owned by user {user_id}"
                 )
         else:
+            # #region agent log
+            with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"analytics.py:58","message":"Querying for latest committed timeline","data":{"user_id":str(user_id)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+            # #endregion
             # Get latest committed timeline
             committed_timeline = db.query(CommittedTimeline).filter(
                 CommittedTimeline.user_id == user_id
             ).order_by(CommittedTimeline.committed_date.desc()).first()
-            
+            # #region agent log
+            with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"analytics.py:63","message":"Committed timeline query result","data":{"found":committed_timeline is not None,"timeline_id":str(committed_timeline.id) if committed_timeline else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+            # #endregion
             if not committed_timeline:
+                # #region agent log
+                with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"analytics.py:65","message":"No committed timeline found - raising 404","data":{"user_id":str(user_id)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+                # #endregion
                 raise HTTPException(
                     status_code=404,
                     detail=f"No committed timeline found for user {user_id}"
@@ -101,6 +117,10 @@ async def get_analytics_summary(
             }
         
         # Generate new snapshot
+        # #region agent log
+        with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"analytics.py:104","message":"Starting analytics orchestrator","data":{"user_id":str(user_id),"timeline_id":str(committed_timeline.id),"timeline_version":timeline_version},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         orchestrator = AnalyticsOrchestrator(db, user_id)
         request_id = f"analytics-{user_id}-{committed_timeline.id}-{timeline_version}"
         result = orchestrator.run(
@@ -108,6 +128,10 @@ async def get_analytics_summary(
             user_id=user_id,
             timeline_id=committed_timeline.id
         )
+        # #region agent log
+        with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"analytics.py:111","message":"Orchestrator completed","data":{"has_result":result is not None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         
         # Get the newly created snapshot
         new_snapshot = db.query(AnalyticsSnapshot).filter(
@@ -121,20 +145,33 @@ async def get_analytics_summary(
                 detail="Failed to retrieve created snapshot"
             )
         
-        return {
+        response_data = {
             "snapshot_id": str(new_snapshot.id),
             "timeline_version": new_snapshot.timeline_version,
             "created_at": new_snapshot.created_at.isoformat(),
             "summary": new_snapshot.summary_json,
             "from_cache": False
         }
+        # #region agent log
+        with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"analytics.py:130","message":"Returning response","data":{"has_summary":"summary" in response_data,"summary_type":type(response_data.get("summary")).__name__},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
+        return response_data
         
     except AnalyticsOrchestratorError as e:
+        # #region agent log
+        with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"analytics.py:133","message":"AnalyticsOrchestratorError caught","data":{"error":str(e)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         raise HTTPException(
             status_code=400,
             detail=str(e)
         )
     except Exception as e:
+        # #region agent log
+        with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"analytics.py:138","message":"Unexpected exception","data":{"error_type":type(e).__name__,"error":str(e)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error: {str(e)}"

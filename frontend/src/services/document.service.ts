@@ -2,10 +2,13 @@
  * Document Service
  * 
  * Handles document upload and management API calls.
+ * 
+ * IMPORTANT: All API calls go through @/api/client (apiClient)
  */
 
-import { api } from './api.client';
-import type { DocumentArtifact, ApiResponse } from '@/types/api';
+import { apiClient } from '@/api/client';
+import { ENDPOINTS } from '@/api/endpoints';
+import type { DocumentArtifact } from '@/types/api';
 
 export const documentService = {
   /**
@@ -18,35 +21,39 @@ export const documentService = {
     documentType?: string,
     onProgress?: (progress: number) => void
   ): Promise<{ documentId: string }> => {
-    return api.upload('/api/v1/documents/upload', file, onProgress);
+    return apiClient.upload<{ documentId: string }>(
+      ENDPOINTS.DOCUMENTS.UPLOAD,
+      file,
+      { onProgress }
+    );
   },
 
   /**
    * Get document by ID
    */
   getById: async (documentId: string): Promise<DocumentArtifact> => {
-    return api.get(`/api/v1/documents/${documentId}`);
+    return apiClient.get<DocumentArtifact>(ENDPOINTS.DOCUMENTS.GET_BY_ID(documentId));
   },
 
   /**
    * Get user's documents
    */
   getUserDocuments: async (skip?: number, limit?: number): Promise<DocumentArtifact[]> => {
-    return api.get('/api/v1/documents', { skip, limit });
+    return apiClient.get<DocumentArtifact[]>(ENDPOINTS.DOCUMENTS.LIST, { skip, limit });
   },
 
   /**
    * Get extracted text from document
    */
   getExtractedText: async (documentId: string): Promise<{ text: string }> => {
-    return api.get(`/api/v1/documents/${documentId}/text`);
+    return apiClient.get<{ text: string }>(`${ENDPOINTS.DOCUMENTS.GET_BY_ID(documentId)}/text`);
   },
 
   /**
    * Delete document
    */
   delete: async (documentId: string): Promise<void> => {
-    return api.delete(`/api/v1/documents/${documentId}`);
+    return apiClient.delete<void>(ENDPOINTS.DOCUMENTS.DELETE(documentId));
   },
 };
 
