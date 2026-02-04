@@ -1,9 +1,19 @@
 """Main FastAPI application entry point."""
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.api.v1 import api_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    # Startup: Initialize resources
+    yield
+    # Shutdown: Clean up resources
+
 
 # Initialize FastAPI application
 app = FastAPI(
@@ -12,6 +22,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     debug=settings.DEBUG,
+    lifespan=lifespan,
 )
 
 # Configure CORS middleware
@@ -22,18 +33,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Run on application startup."""
-    pass
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Run on application shutdown."""
-    pass
 
 
 @app.get("/")

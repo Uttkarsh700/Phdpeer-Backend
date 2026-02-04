@@ -24,7 +24,11 @@ from app.models.opportunity import (
     OpportunityFeedItem,
 )
 
+# Import Base from database for Alembic
+from app.database import Base
+
 __all__ = [
+    'Base',
     'BaseModel',
     'User',
     'DocumentArtifact',
@@ -46,3 +50,6 @@ __all__ = [
     'OpportunityFeedSnapshot',
     'OpportunityFeedItem',
 ]
+
+# Ensure all models are imported for Alembic to detect them
+# This is necessary for automatic migration generation
