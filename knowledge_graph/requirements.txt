@@ -1,0 +1,9 @@
+langchain-google-genai>=0.1.0
+langchain-experimental>=0.0.60
+langchain-neo4j>=0.1.0
+langchain-community>=0.2.0
+langchain-core>=0.2.0
+openai>=1.30.0
+neo4j>=5.18.0
+pymupdf>=1.23.0          # PyMuPDF — the import name is "fitz", used for PDF reading
+python-dotenv>=1.0.0
