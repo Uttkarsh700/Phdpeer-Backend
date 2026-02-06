@@ -1,67 +1,75 @@
 /**
- * API Type Utilities
+ * API Client Type Definitions
  * 
- * Type helpers for API requests and responses.
+ * Type-safe definitions for API requests and responses
  */
 
 /**
- * Extract response data type from a service method
- * 
- * @example
- * ```ts
- * type AssessmentResponse = ExtractResponse<typeof assessmentService.getLatest>;
- * ```
+ * HTTP Method types
  */
-export type ExtractResponse<T> = T extends (...args: any[]) => Promise<infer R>
-  ? R
-  : never;
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
- * Extract request data type from a service method
- * 
- * @example
- * ```ts
- * type SubmitRequest = ExtractRequest<typeof assessmentService.submitQuestionnaire>;
- * ```
+ * Request configuration options
  */
-export type ExtractRequest<T> = T extends (data: infer D, ...args: any[]) => Promise<any>
-  ? D
-  : T extends (...args: any[]) => Promise<any>
-  ? never
-  : never;
-
-/**
- * Paginated request parameters
- */
-export interface PaginatedRequest {
-  skip?: number;
-  limit?: number;
-  sortBy?: string;
-  sortOrder?: 'asc' | 'desc';
+export interface RequestConfig {
+  /** Request headers */
+  headers?: Record<string, string>;
+  /** Request timeout in milliseconds */
+  timeout?: number;
+  /** Whether to include credentials (cookies) */
+  credentials?: RequestCredentials;
+  /** Request signal for cancellation */
+  signal?: AbortSignal;
 }
 
 /**
- * Standard paginated response
+ * API Request options extending RequestConfig
  */
-export interface PaginatedResponse<T> {
-  items: T[];
+export interface ApiRequestOptions<TBody = unknown> extends RequestConfig {
+  /** Request body (for POST, PUT, PATCH) */
+  body?: TBody;
+  /** Query parameters (for GET, DELETE) */
+  params?: Record<string, string | number | boolean | null | undefined>;
+}
+
+/**
+ * Standard API Response wrapper
+ */
+export interface ApiResponse<TData = unknown> {
+  /** Response data */
+  data: TData;
+  /** Response status code */
+  status: number;
+  /** Response status text */
+  statusText: string;
+  /** Response headers */
+  headers: Headers;
+}
+
+/**
+ * Paginated response structure
+ */
+export interface PaginatedResponse<TItem = unknown> {
+  items: TItem[];
   total: number;
-  skip: number;
-  limit: number;
-  hasNext: boolean;
-  hasPrev: boolean;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 /**
- * Request with query parameters
+ * Error response structure from backend
  */
-export interface QueryParams {
-  [key: string]: string | number | boolean | undefined | null;
-}
-
-/**
- * Request with path parameters
- */
-export interface PathParams {
-  [key: string]: string | number;
+export interface ErrorResponse {
+  /** Error message */
+  message: string;
+  /** Error code */
+  code?: string;
+  /** Detailed error information */
+  detail?: string | Record<string, unknown>;
+  /** Field-specific validation errors */
+  errors?: Record<string, string[]>;
+  /** HTTP status code */
+  status?: number;
 }

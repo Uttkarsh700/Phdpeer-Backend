@@ -1,60 +1,70 @@
 /**
  * Document Service
  * 
- * Handles document upload and management API calls.
- * 
- * IMPORTANT: All API calls go through @/api/client (apiClient)
+ * Handles document upload operations.
+ * Maps to: POST /api/v1/documents/upload
+ * Uses: DocumentService (backend)
  */
 
-import { apiClient } from '@/api/client';
-import { ENDPOINTS } from '@/api/endpoints';
-import type { DocumentArtifact } from '@/types/api';
+import { post } from '@/api/client';
 
-export const documentService = {
-  /**
-   * Upload a document
-   */
-  upload: async (
-    file: File,
-    title?: string,
-    description?: string,
-    documentType?: string,
-    onProgress?: (progress: number) => void
-  ): Promise<{ documentId: string }> => {
-    return apiClient.upload<{ documentId: string }>(
-      ENDPOINTS.DOCUMENTS.UPLOAD,
-      file,
-      { onProgress }
-    );
-  },
+/**
+ * Document upload response
+ * Backend DocumentService.upload_document() returns UUID directly
+ * API endpoint should wrap it in a response object
+ */
+export interface DocumentUploadResponse {
+  document_id: string; // UUID - returned by DocumentService.upload_document()
+}
 
-  /**
-   * Get document by ID
-   */
-  getById: async (documentId: string): Promise<DocumentArtifact> => {
-    return apiClient.get<DocumentArtifact>(ENDPOINTS.DOCUMENTS.GET_BY_ID(documentId));
-  },
+/**
+ * Upload a document file
+ * 
+ * One user action → one orchestrator call
+ * UI waits for backend response (no optimistic success)
+ * 
+ * @param file - File to upload (PDF or DOCX)
+ * @param userId - User ID (UUID string)
+ * @param title - Optional document title (defaults to filename)
+ * @param description - Optional document description
+ * @param documentType - Optional document type (e.g., 'research_proposal')
+ * @returns Document upload response with document ID
+ * @throws ApiError if upload fails
+ */
+export async function uploadDocument(
+  file: File,
+  userId: string,
+  title?: string,
+  description?: string,
+  documentType?: string
+): Promise<DocumentUploadResponse> {
+  // Create FormData for file upload
+  // Backend expects: file_content (bytes), filename, user_id, title, description, document_type
+  const formData = new FormData();
+  formData.append('file', file); // File object - backend will read as bytes
+  formData.append('filename', file.name);
+  formData.append('user_id', userId);
+  
+  if (title) {
+    formData.append('title', title);
+  }
+  if (description) {
+    formData.append('description', description);
+  }
+  if (documentType) {
+    formData.append('document_type', documentType);
+  }
 
-  /**
-   * Get user's documents
-   */
-  getUserDocuments: async (skip?: number, limit?: number): Promise<DocumentArtifact[]> => {
-    return apiClient.get<DocumentArtifact[]>(ENDPOINTS.DOCUMENTS.LIST, { skip, limit });
-  },
+  // Call backend endpoint - wait for response (no optimistic success)
+  const response = await post<DocumentUploadResponse>(
+    '/documents/upload',
+    formData,
+    {
+      // Don't set Content-Type header - browser will set it with boundary for FormData
+      headers: {},
+    }
+  );
 
-  /**
-   * Get extracted text from document
-   */
-  getExtractedText: async (documentId: string): Promise<{ text: string }> => {
-    return apiClient.get<{ text: string }>(`${ENDPOINTS.DOCUMENTS.GET_BY_ID(documentId)}/text`);
-  },
-
-  /**
-   * Delete document
-   */
-  delete: async (documentId: string): Promise<void> => {
-    return apiClient.delete<void>(ENDPOINTS.DOCUMENTS.DELETE(documentId));
-  },
-};
-
-export default documentService;
+  // Backend returns document_id (UUID)
+  return response.data;
+}

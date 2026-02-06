@@ -7,7 +7,6 @@ set -e
 
 # Configuration
 API_URL="${API_URL:-http://localhost:8000}"
-FRONTEND_URL="${FRONTEND_URL:-http://localhost:3000}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -20,15 +19,6 @@ echo ""
 # Check Backend
 echo -n "Backend API: "
 if curl -sf "$API_URL/health" > /dev/null; then
-    echo -e "${GREEN}✓ Healthy${NC}"
-else
-    echo -e "${RED}✗ Unhealthy${NC}"
-    exit 1
-fi
-
-# Check Frontend
-echo -n "Frontend: "
-if curl -sf "$FRONTEND_URL" > /dev/null; then
     echo -e "${GREEN}✓ Healthy${NC}"
 else
     echo -e "${RED}✗ Unhealthy${NC}"

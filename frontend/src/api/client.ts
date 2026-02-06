@@ -1,498 +1,329 @@
 /**
- * Centralized API Client Wrapper
+ * API Client
  * 
- * This is the SINGLE POINT OF ENTRY for all backend API calls.
- * All services MUST use this client - no direct fetch/axios calls allowed.
- * 
- * Features:
- * - Typed request and response helpers
+ * Centralized HTTP client for API requests
+ * - Base URL from environment variable
+ * - Typed request helpers
  * - Standard error handling
- * - Idempotency header support
- * - No domain logic (pure API client)
+ * - No business logic
  */
 
-import axios, {
-  AxiosInstance,
-  AxiosError,
-  AxiosRequestConfig,
-  AxiosResponse,
-  InternalAxiosRequestConfig,
-} from 'axios';
-import { env, features } from '@/config/env';
-import type { ApiError } from '@/types/api';
+import {
+  type ApiRequestOptions,
+  type ApiResponse,
+  type HttpMethod,
+  type ErrorResponse,
+} from './types';
+import {
+  ApiError,
+  NetworkError,
+  TimeoutError,
+  createApiError,
+} from './errors';
 
 /**
- * Request configuration options
+ * Get base URL from environment variable
+ * Falls back to default if not set
  */
-export interface ApiRequestOptions extends Omit<AxiosRequestConfig, 'headers'> {
-  /**
-   * Idempotency key for ensuring request idempotency
-   * When provided, adds 'Idempotency-Key' header to the request
-   */
-  idempotencyKey?: string;
+function getBaseUrl(): string {
+  const baseUrl = import.meta.env.VITE_API_BASE_URL;
   
-  /**
-   * Custom headers to merge with default headers
-   */
-  headers?: Record<string, string>;
-  
-  /**
-   * Skip authentication token (for public endpoints)
-   */
-  skipAuth?: boolean;
-  
-  /**
-   * Retry configuration
-   */
-  retry?: {
-    attempts: number;
-    delay: number;
-  };
-}
-
-/**
- * Typed API response
- */
-export interface ApiResponse<T = any> {
-  data: T;
-  status: number;
-  statusText: string;
-  headers: Record<string, string>;
-}
-
-/**
- * Enhanced API Error with additional context
- */
-export class ApiClientError extends Error {
-  public readonly code: string;
-  public readonly status?: number;
-  public readonly details?: any;
-  public readonly originalError?: AxiosError;
-  public readonly isNetworkError: boolean;
-  public readonly isTimeoutError: boolean;
-  public readonly isServerError: boolean;
-  public readonly isClientError: boolean;
-
-  constructor(error: AxiosError | Error, message?: string) {
-    const apiError = error instanceof AxiosError 
-      ? transformAxiosError(error)
-      : { message: error.message, code: 'UNKNOWN_ERROR', status: undefined, details: undefined };
-
-    super(message || apiError.message);
-    this.name = 'ApiClientError';
-    this.code = apiError.code || 'UNKNOWN_ERROR';
-    this.status = error instanceof AxiosError && error.response ? error.response.status : undefined;
-    this.details = apiError.details;
-    
-    if (error instanceof AxiosError) {
-      this.originalError = error;
-      this.isNetworkError = !error.response && !!error.request;
-      this.isTimeoutError = error.code === 'ECONNABORTED' || error.message.includes('timeout');
-      this.isServerError = error.response ? error.response.status >= 500 : false;
-      this.isClientError = error.response ? error.response.status >= 400 && error.response.status < 500 : false;
-    } else {
-      this.isNetworkError = false;
-      this.isTimeoutError = false;
-      this.isServerError = false;
-      this.isClientError = false;
+  if (!baseUrl) {
+    // Default to localhost backend in development
+    if (import.meta.env.DEV) {
+      return 'http://localhost:8000/api/v1';
     }
-
-    // Maintain stack trace (V8-specific, not available in all environments)
-    if (typeof (Error as any).captureStackTrace === 'function') {
-      (Error as any).captureStackTrace(this, ApiClientError);
-    }
-  }
-}
-
-/**
- * Transform Axios error to standardized format
- */
-function transformAxiosError(error: AxiosError): ApiError {
-  if (error.response) {
-    // Server responded with error status
-    const data = error.response.data as any;
-    const status = error.response.status;
-    
-    return {
-      message: extractErrorMessage(data, status),
-      code: String(status),
-      details: data,
-    };
-  } else if (error.request) {
-    // Request made but no response received
-    if (error.code === 'ECONNABORTED') {
-      return {
-        message: 'Request timed out. Please try again.',
-        code: 'TIMEOUT_ERROR',
-        details: error.request,
-      };
-    }
-    
-    return {
-      message: 'No response from server. Please check your connection.',
-      code: 'NETWORK_ERROR',
-      details: error.request,
-    };
-  } else {
-    // Error in request setup
-    return {
-      message: error.message || 'An unexpected error occurred',
-      code: 'UNKNOWN_ERROR',
-      details: error,
-    };
-  }
-}
-
-/**
- * Extract error message from response data
- */
-function extractErrorMessage(data: any, status: number): string {
-  // FastAPI format
-  if (data?.detail) {
-    if (typeof data.detail === 'string') {
-      return data.detail;
-    }
-    if (Array.isArray(data.detail)) {
-      return data.detail.map((d: any) => d.msg || d).join(', ');
-    }
+    throw new Error('VITE_API_BASE_URL environment variable is not set');
   }
   
-  // Standard format
-  if (data?.message) {
-    return data.message;
-  }
-  
-  // Validation errors
-  if (data?.errors && Array.isArray(data.errors)) {
-    return data.errors.join(', ');
-  }
-  
-  // Default messages by status
-  const defaultMessages: Record<number, string> = {
-    400: 'Bad request. Please check your input.',
-    401: 'Authentication required. Please log in.',
-    403: 'You do not have permission to perform this action.',
-    404: 'The requested resource was not found.',
-    409: 'A conflict occurred. The resource may have been modified.',
-    422: 'Validation failed. Please check your input.',
-    429: 'Too many requests. Please try again later.',
-    500: 'An internal server error occurred.',
-    502: 'Bad gateway. The server is temporarily unavailable.',
-    503: 'Service unavailable. Please try again later.',
-  };
-  
-  return defaultMessages[status] || 'An error occurred';
+  return baseUrl;
 }
 
 /**
- * Generate idempotency key (UUID v4)
+ * Build URL with query parameters
  */
-function generateIdempotencyKey(): string {
-  // Simple UUID v4 generator (for browser compatibility)
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+function buildUrl(endpoint: string, params?: Record<string, string | number | boolean | null | undefined>): string {
+  const baseUrl = getBaseUrl();
+  const url = new URL(endpoint, baseUrl);
+  
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== null && value !== undefined) {
+        url.searchParams.append(key, String(value));
+      }
+    });
+  }
+  
+  return url.toString();
 }
 
 /**
- * Create configured Axios instance
+ * Get default headers
  */
-const axiosInstance: AxiosInstance = axios.create({
-  baseURL: env.apiBaseUrl,
-  timeout: env.apiTimeout,
-  headers: {
+function getDefaultHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-  },
-});
+  };
+  
+  // Add authorization token if available
+  const token = getAuthToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  return headers;
+}
 
 /**
- * Request interceptor
- * - Adds authentication token
- * - Adds idempotency key if provided
- * - Logs requests in development
+ * Get authentication token from storage
+ * This is a placeholder - implement based on your auth strategy
  */
-axiosInstance.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
-    // Add authentication token (unless skipped)
-    if (!(config as any).skipAuth) {
-      const token = localStorage.getItem('auth_token');
-      if (token && config.headers) {
-        config.headers.Authorization = `Bearer ${token}`;
+function getAuthToken(): string | null {
+  // TODO: Implement based on your authentication strategy
+  // Example: return localStorage.getItem('auth_token');
+  // Example: return sessionStorage.getItem('token');
+  return null;
+}
+
+/**
+ * Parse error response from backend
+ */
+async function parseErrorResponse(response: Response): Promise<ErrorResponse> {
+  try {
+    const data = await response.json();
+    return {
+      message: data.message || data.detail || response.statusText,
+      code: data.code,
+      detail: data.detail,
+      errors: data.errors,
+      status: response.status,
+    };
+  } catch {
+    return {
+      message: response.statusText || 'An error occurred',
+      status: response.status,
+    };
+  }
+}
+
+/**
+ * Create AbortController with timeout
+ */
+function createTimeoutController(timeout?: number): AbortController | null {
+  if (!timeout) return null;
+  
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeout);
+  return controller;
+}
+
+/**
+ * Make HTTP request
+ */
+export async function request<TData = unknown>(
+  method: HttpMethod,
+  endpoint: string,
+  options: ApiRequestOptions = {}
+): Promise<ApiResponse<TData>> {
+  const {
+    body,
+    params,
+    headers = {},
+    timeout,
+    credentials = 'include',
+    signal,
+  } = options;
+
+  // Build URL with query parameters
+  const url = buildUrl(endpoint, params);
+  
+  // Merge headers
+  const defaultHeaders = getDefaultHeaders();
+  const requestHeaders = {
+    ...defaultHeaders,
+    ...headers,
+  };
+  
+  // Create timeout controller if timeout is specified
+  const timeoutController = createTimeoutController(timeout);
+  
+  // Combine abort signals if both exist
+  // Note: AbortSignal.any() may not be available in all browsers
+  let abortSignal: AbortSignal | undefined;
+  if (signal && timeoutController?.signal) {
+    // If both signals exist, create a combined controller
+    // Check if AbortSignal.any is available (newer browsers)
+    if (typeof AbortSignal !== 'undefined' && 'any' in AbortSignal && typeof (AbortSignal as any).any === 'function') {
+      abortSignal = (AbortSignal as any).any([signal, timeoutController.signal]);
+    } else {
+      // Fallback: create a combined controller
+      const combinedController = new AbortController();
+      const abort = () => combinedController.abort();
+      signal.addEventListener('abort', abort);
+      timeoutController.signal.addEventListener('abort', abort);
+      abortSignal = combinedController.signal;
+    }
+  } else {
+    abortSignal = signal || timeoutController?.signal;
+  }
+
+  try {
+    // Prepare request options
+    const requestOptions: RequestInit = {
+      method,
+      headers: requestHeaders,
+      credentials,
+      signal: abortSignal,
+    };
+    
+    // Add body for methods that support it
+    if (body && ['POST', 'PUT', 'PATCH'].includes(method)) {
+      if (body instanceof FormData) {
+        // Remove Content-Type header for FormData (browser will set it with boundary)
+        delete requestHeaders['Content-Type'];
+        requestOptions.body = body;
+      } else {
+        requestOptions.body = JSON.stringify(body);
       }
     }
 
-    // Add idempotency key if provided
-    const idempotencyKey = (config as any).idempotencyKey;
-    if (idempotencyKey && config.headers) {
-      config.headers['Idempotency-Key'] = idempotencyKey;
-    }
-
-    // Merge custom headers
-    const customHeaders = (config as any).headers;
-    if (customHeaders && config.headers) {
-      Object.assign(config.headers, customHeaders);
-    }
-
-    // Log requests in development
-    if (env.isDevelopment && features.enableDebug) {
-      console.log(`[API] ${config.method?.toUpperCase()} ${config.url}`, {
-        params: config.params,
-        idempotencyKey,
-      });
-    }
-
-    return config;
-  },
-  (error) => {
-    return Promise.reject(new ApiClientError(error));
-  }
-);
-
-/**
- * Response interceptor
- * - Transforms errors to ApiClientError
- * - Logs responses in development
- */
-axiosInstance.interceptors.response.use(
-  (response: AxiosResponse) => {
-    // Log responses in development
-    if (env.isDevelopment && features.enableDebug) {
-      console.log(`[API] Response:`, {
-        status: response.status,
-        url: response.config.url,
-        data: response.data,
-      });
-    }
-
-    return response;
-  },
-  (error: AxiosError) => {
-    const apiError = new ApiClientError(error);
+    // Make request
+    const response = await fetch(url, requestOptions);
     
-    // Log errors in development
-    if (env.isDevelopment && features.enableDebug) {
-      console.error('[API] Error:', {
-        code: apiError.code,
-        status: apiError.status,
-        message: apiError.message,
-        details: apiError.details,
-      });
+    // Handle non-OK responses
+    if (!response.ok) {
+      const errorResponse = await parseErrorResponse(response);
+      throw createApiError(
+        errorResponse.message,
+        response.status,
+        errorResponse
+      );
     }
-
-    return Promise.reject(apiError);
-  }
-);
-
-/**
- * Centralized API Client
- * 
- * All backend API calls MUST go through this client.
- * No direct fetch/axios calls should exist in the codebase.
- */
-export class ApiClient {
-  /**
-   * GET request
-   */
-  async get<T = any>(
-    url: string,
-    params?: Record<string, any>,
-    options?: ApiRequestOptions
-  ): Promise<T> {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/4e161292-030e-4892-a887-f175fa552c2f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'client.ts:298',message:'ApiClient.get called',data:{url,params,hasParams:!!params},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-    const config: AxiosRequestConfig = {
-      method: 'GET',
-      url,
-      params,
-      ...options,
-    };
-
-    try {
-      const response = await axiosInstance.request<T>(config);
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/4e161292-030e-4892-a887-f175fa552c2f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'client.ts:312',message:'API request successful',data:{status:response.status,url,hasData:!!response.data,dataKeys:Object.keys(response.data||{})},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'ALL'})}).catch(()=>{});
-      // #endregion
-      return response.data;
-    } catch (error) {
-      // #region agent log
-      const isAxiosError = error instanceof AxiosError;
-      const errorObj = error as any;
-      fetch('http://127.0.0.1:7242/ingest/4e161292-030e-4892-a887-f175fa552c2f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'client.ts:314',message:'API request failed',data:{errorType:errorObj?.constructor?.name,isAxiosError,status:isAxiosError ? errorObj.response?.status : undefined,errorMessage:errorObj?.message || String(error)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'ALL'})}).catch(()=>{});
-      // #endregion
-      throw error instanceof ApiClientError ? error : new ApiClientError(error as Error);
+    
+    // Parse response
+    let data: TData;
+    const contentType = response.headers.get('content-type');
+    
+    if (contentType?.includes('application/json')) {
+      data = await response.json();
+    } else if (contentType?.includes('text/')) {
+      data = (await response.text()) as unknown as TData;
+    } else {
+      data = (await response.blob()) as unknown as TData;
     }
-  }
-
-  /**
-   * POST request
-   */
-  async post<T = any>(
-    url: string,
-    data?: any,
-    options?: ApiRequestOptions
-  ): Promise<T> {
-    // Auto-generate idempotency key if not provided for POST requests
-    const idempotencyKey = options?.idempotencyKey || generateIdempotencyKey();
-
-    const config: AxiosRequestConfig = {
-      method: 'POST',
-      url,
+    
+    return {
       data,
-      idempotencyKey,
-      ...options,
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
     };
-
-    try {
-      const response = await axiosInstance.request<T>(config);
-      return response.data;
-    } catch (error) {
-      throw error instanceof ApiClientError ? error : new ApiClientError(error as Error);
+  } catch (error) {
+    // Handle AbortError (timeout or cancellation)
+    if (error instanceof Error && error.name === 'AbortError') {
+      if (timeoutController?.signal.aborted) {
+        throw new TimeoutError('Request timeout');
+      }
+      throw new NetworkError('Request was cancelled');
     }
-  }
-
-  /**
-   * PUT request
-   */
-  async put<T = any>(
-    url: string,
-    data?: any,
-    options?: ApiRequestOptions
-  ): Promise<T> {
-    const config: AxiosRequestConfig = {
-      method: 'PUT',
-      url,
-      data,
-      ...options,
-    };
-
-    try {
-      const response = await axiosInstance.request<T>(config);
-      return response.data;
-    } catch (error) {
-      throw error instanceof ApiClientError ? error : new ApiClientError(error as Error);
+    
+    // Handle network errors
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new NetworkError('Network error: Unable to connect to server');
     }
-  }
-
-  /**
-   * PATCH request
-   */
-  async patch<T = any>(
-    url: string,
-    data?: any,
-    options?: ApiRequestOptions
-  ): Promise<T> {
-    const config: AxiosRequestConfig = {
-      method: 'PATCH',
-      url,
-      data,
-      ...options,
-    };
-
-    try {
-      const response = await axiosInstance.request<T>(config);
-      return response.data;
-    } catch (error) {
-      throw error instanceof ApiClientError ? error : new ApiClientError(error as Error);
+    
+    // Re-throw ApiError instances
+    if (error instanceof ApiError) {
+      throw error;
     }
-  }
-
-  /**
-   * DELETE request
-   */
-  async delete<T = any>(
-    url: string,
-    options?: ApiRequestOptions
-  ): Promise<T> {
-    const config: AxiosRequestConfig = {
-      method: 'DELETE',
-      url,
-      ...options,
-    };
-
-    try {
-      const response = await axiosInstance.request<T>(config);
-      return response.data;
-    } catch (error) {
-      throw error instanceof ApiClientError ? error : new ApiClientError(error as Error);
-    }
-  }
-
-  /**
-   * Upload file
-   */
-  async upload<T = any>(
-    url: string,
-    file: File,
-    options?: ApiRequestOptions & {
-      onProgress?: (progress: number) => void;
-      fieldName?: string;
-    }
-  ): Promise<T> {
-    const formData = new FormData();
-    formData.append(options?.fieldName || 'file', file);
-
-    const config: AxiosRequestConfig = {
-      method: 'POST',
-      url,
-      data: formData,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        ...options?.headers,
-      },
-      onUploadProgress: (progressEvent) => {
-        if (options?.onProgress && progressEvent.total) {
-          const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          options.onProgress(progress);
-        }
-      },
-      ...options,
-    };
-
-    try {
-      const response = await axiosInstance.request<T>(config);
-      return response.data;
-    } catch (error) {
-      throw error instanceof ApiClientError ? error : new ApiClientError(error as Error);
-    }
-  }
-
-  /**
-   * Raw request (for advanced use cases)
-   * Use with caution - prefer typed methods above
-   */
-  async request<T = any>(config: AxiosRequestConfig & ApiRequestOptions): Promise<ApiResponse<T>> {
-    try {
-      const response = await axiosInstance.request<T>(config);
-      return {
-        data: response.data,
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers as Record<string, string>,
-      };
-    } catch (error) {
-      throw error instanceof ApiClientError ? error : new ApiClientError(error as Error);
-    }
+    
+    // Wrap unknown errors
+    throw new ApiError(
+      error instanceof Error ? error.message : 'Unknown error occurred',
+      500,
+      undefined
+    );
   }
 }
 
 /**
- * Default API client instance
- * 
- * This is the SINGLE INSTANCE that all services should use.
- * Import this, not the class.
+ * GET request helper
  */
-export const apiClient = new ApiClient();
+export async function get<TData = unknown>(
+  endpoint: string,
+  options?: Omit<ApiRequestOptions, 'body'>
+): Promise<ApiResponse<TData>> {
+  return request<TData>('GET', endpoint, options);
+}
 
 /**
- * Legacy compatibility: Export as 'api' for backward compatibility
- * @deprecated Use 'apiClient' instead
+ * POST request helper
  */
-export const api = apiClient;
+export async function post<TData = unknown, TBody = unknown>(
+  endpoint: string,
+  body?: TBody,
+  options?: Omit<ApiRequestOptions<TBody>, 'body'>
+): Promise<ApiResponse<TData>> {
+  return request<TData>('POST', endpoint, { ...options, body });
+}
 
-// ApiClientError is already exported above with 'export class ApiClientError'
-// No need for duplicate export statement
+/**
+ * PUT request helper
+ */
+export async function put<TData = unknown, TBody = unknown>(
+  endpoint: string,
+  body?: TBody,
+  options?: Omit<ApiRequestOptions<TBody>, 'body'>
+): Promise<ApiResponse<TData>> {
+  return request<TData>('PUT', endpoint, { ...options, body });
+}
 
-export default apiClient;
+/**
+ * PATCH request helper
+ */
+export async function patch<TData = unknown, TBody = unknown>(
+  endpoint: string,
+  body?: TBody,
+  options?: Omit<ApiRequestOptions<TBody>, 'body'>
+): Promise<ApiResponse<TData>> {
+  return request<TData>('PATCH', endpoint, { ...options, body });
+}
+
+/**
+ * DELETE request helper
+ */
+export async function del<TData = unknown>(
+  endpoint: string,
+  options?: Omit<ApiRequestOptions, 'body'>
+): Promise<ApiResponse<TData>> {
+  return request<TData>('DELETE', endpoint, options);
+}
+
+/**
+ * API Client object with all methods
+ */
+export const apiClient = {
+  get,
+  post,
+  put,
+  patch,
+  delete: del,
+  request,
+};
+
+/**
+ * Set authentication token
+ * This is a helper function - implement based on your auth strategy
+ */
+export function setAuthToken(token: string | null): void {
+  // TODO: Implement based on your authentication strategy
+  // Example: localStorage.setItem('auth_token', token);
+  // Example: sessionStorage.setItem('token', token);
+}
+
+/**
+ * Clear authentication token
+ */
+export function clearAuthToken(): void {
+  setAuthToken(null);
+}

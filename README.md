@@ -4,12 +4,6 @@ A production-ready platform for managing and optimizing PhD research timelines w
 
 ## Tech Stack
 
-### Frontend
-- React 18
-- Vite
-- TypeScript
-- TailwindCSS
-
 ### Backend
 - FastAPI (Python 3.11+)
 - PostgreSQL
@@ -23,7 +17,6 @@ A production-ready platform for managing and optimizing PhD research timelines w
 
 ```
 .
-├── frontend/          # React + Vite + TypeScript frontend
 ├── backend/           # FastAPI Python backend
 ├── resources/         # Project documentation, PRDs, diagrams
 ├── infra/            # Infrastructure configuration
@@ -33,7 +26,6 @@ A production-ready platform for managing and optimizing PhD research timelines w
 ## Getting Started
 
 ### Prerequisites
-- Node.js 18+ and npm/yarn
 - Python 3.11+
 - Docker and Docker Compose
 - PostgreSQL 15+
@@ -51,14 +43,7 @@ A production-ready platform for managing and optimizing PhD research timelines w
    docker-compose up -d
    ```
 
-3. **Frontend Development**
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
-
-4. **Backend Development**
+3. **Backend Development**
    ```bash
    cd backend
    python -m venv venv

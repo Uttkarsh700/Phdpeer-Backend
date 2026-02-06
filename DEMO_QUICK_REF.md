@@ -7,15 +7,12 @@
 cd backend
 python seed_demo_data.py
 
-# Start services
-# Terminal 1:
+# Start backend
 cd backend && uvicorn app.main:app --reload
-
-# Terminal 2:
-cd frontend && npm run dev
 ```
 
-**Access:** http://localhost:3000
+**Access API:** http://localhost:8000
+**API Docs:** http://localhost:8000/docs
 
 ---
 
@@ -177,12 +174,10 @@ curl http://localhost:8000/api/v1/progress/stages/33333333-3333-3333-3333-333333
 
 - [ ] Database seeded (`seed_demo_data.py` run)
 - [ ] Backend running (port 8000)
-- [ ] Frontend running (port 3000)
-- [ ] Can access http://localhost:3000
-- [ ] All three users load correctly
-- [ ] Timelines display properly
-- [ ] Progress dashboards work
-- [ ] Assessment loads
+- [ ] Can access http://localhost:8000
+- [ ] API docs accessible at http://localhost:8000/docs
+- [ ] All three users exist in database
+- [ ] API endpoints respond correctly
 
 ---
 
@@ -193,10 +188,9 @@ curl http://localhost:8000/api/v1/progress/stages/33333333-3333-3333-3333-333333
 cd backend && python seed_demo_data.py
 ```
 
-**Frontend not connecting?**
+**Backend not starting?**
 ```
-Check frontend/.env:
-VITE_API_BASE_URL=http://localhost:8000
+Check backend/.env file exists and has correct DATABASE_URL
 ```
 
 **Progress not calculating?**

@@ -44,15 +44,6 @@ make lint-backend
 make format-backend
 ```
 
-### Frontend (TypeScript/React)
-- Follow ESLint configuration
-- Use TypeScript for all new code
-- Write meaningful component names
-- Use functional components with hooks
-
-```bash
-make lint-frontend
-```
 
 ## Testing
 

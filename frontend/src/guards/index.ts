@@ -1,12 +1,20 @@
 /**
- * Route Guards Module
+ * Frontend Guards
  * 
- * Guards routes based on global state to prevent invalid navigation.
+ * Exports all guard functions and utilities.
  */
 
-export { RouteGuard } from './RouteGuard';
 export {
-  isRouteValidForState,
-  getRouteFromState,
-  ROUTE_VALIDATION_RULES,
-} from './routeValidation';
+  guardTimelineGenerationRequiresBaseline,
+  guardCommitRequiresDraft,
+  guardProgressRequiresCommittedTimeline,
+  guardAnalyticsRequiresCommittedTimeline,
+  useStateGuards,
+  checkGuards,
+  GuardViolationError,
+} from './stateGuards';
+
+export { RouteGuard, useRouteAccessible } from './RouteGuard';
+export { ProtectedRoute } from './ProtectedRoute';
+export { RouteErrorBoundary } from './RouteErrorBoundary';
+export { useNavigationGuard } from './useNavigationGuard';

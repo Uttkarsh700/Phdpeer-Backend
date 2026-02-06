@@ -3,7 +3,6 @@
 ## Prerequisites
 
 ### Required Software
-- **Node.js**: 18.x or higher
 - **Python**: 3.11 or higher
 - **PostgreSQL**: 15 or higher
 - **Docker**: Latest version
@@ -23,7 +22,7 @@ cd Frensei-Engine
 ```
 
 ### 2. Environment Configuration
-Create `.env` files in both frontend and backend directories using the `.env.example` templates.
+Create `.env` file in the backend directory using the `.env.example` template.
 
 ### 3. Database Setup
 ```bash
@@ -44,16 +43,8 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-### 5. Frontend Setup
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
 ## Verification
 
-- Frontend: http://localhost:3000
 - Backend API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
 

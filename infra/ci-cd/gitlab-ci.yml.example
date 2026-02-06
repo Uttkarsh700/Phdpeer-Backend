@@ -27,21 +27,6 @@ test-backend:
     - flake8 app/
   coverage: '/TOTAL.*\s+(\d+%)$/'
 
-# Frontend Tests
-test-frontend:
-  stage: test
-  image: node:18
-  before_script:
-    - cd frontend
-    - npm ci
-  script:
-    - npm run lint
-    - npm run type-check
-    - npm run build
-  cache:
-    paths:
-      - frontend/node_modules/
-
 # Build Backend Image
 build-backend:
   stage: build
@@ -56,21 +41,6 @@ build-backend:
     - docker tag $CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/backend:latest
     - docker push $CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHA
     - docker push $CI_REGISTRY_IMAGE/backend:latest
-
-# Build Frontend Image
-build-frontend:
-  stage: build
-  image: docker:latest
-  services:
-    - docker:dind
-  only:
-    - main
-  script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
-    - docker build -f infra/docker/Dockerfile.frontend.prod -t $CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA .
-    - docker tag $CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/frontend:latest
-    - docker push $CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA
-    - docker push $CI_REGISTRY_IMAGE/frontend:latest
 
 # Deploy to Production
 deploy-production:

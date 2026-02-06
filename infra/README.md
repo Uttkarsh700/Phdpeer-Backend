@@ -53,20 +53,13 @@ See [deployment guide](../resources/docs/deployment-guide.md) for production set
 - **Framework**: FastAPI
 - **Auto-reload**: Enabled in development
 
-### Frontend
-- **Port**: 3000
-- **Framework**: React + Vite
-- **Hot-reload**: Enabled in development
-
 ## Environment Variables
 
-See `.env.example` files in respective directories:
+See `.env.example` file in the backend directory:
 - `/backend/.env.example`
-- `/frontend/.env.example`
 
 ## Health Checks
 
 All services include health checks:
 - Database: `pg_isready`
 - Backend: `/health` endpoint
-- Frontend: HTTP availability check

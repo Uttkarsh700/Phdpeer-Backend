@@ -23,14 +23,11 @@ cd backend
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 uvicorn app.main:app --reload
 
-# Terminal 2: Frontend
-cd frontend
-npm run dev
 ```
 
 ### 3. Access Demo
 
-Visit: http://localhost:3000
+Access the API at: http://localhost:8000
 
 **Demo login IDs** (use any email below, no password needed in demo mode):
 - `sarah.chen@university.edu` (Early-stage)
@@ -466,9 +463,8 @@ python backend/seed_demo_data.py
 Before presenting:
 - [ ] Database seeded successfully
 - [ ] Backend server running
-- [ ] Frontend server running
-- [ ] Can login as each persona
-- [ ] Timelines display correctly
+- [ ] API accessible at http://localhost:8000
+- [ ] API docs accessible at http://localhost:8000/docs
 - [ ] Progress dashboards load
 - [ ] Assessment questionnaire works
 - [ ] Results display properly

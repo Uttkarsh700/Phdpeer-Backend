@@ -1,0 +1,85 @@
+"""Document API endpoints."""
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.services.document_service import (
+    DocumentService,
+    DocumentServiceError,
+    UnsupportedFileTypeError,
+)
+
+router = APIRouter()
+
+
+@router.post("/upload")
+async def upload_document(
+    file: UploadFile = File(..., description="Document file (PDF or DOCX)"),
+    user_id: UUID = Form(..., description="User ID"),
+    title: str | None = Form(None, description="Document title (defaults to filename)"),
+    description: str | None = Form(None, description="Document description"),
+    document_type: str | None = Form(None, description="Document type (e.g., 'research_proposal')"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Upload and process a document.
+    
+    Behavior:
+    - Validates file type (PDF/DOCX)
+    - Extracts and normalizes text
+    - Saves file to storage
+    - Creates DocumentArtifact record
+    - Returns document ID
+    
+    Uses: DocumentService.upload_document()
+    
+    Args:
+        file: Uploaded file (PDF or DOCX)
+        user_id: User ID
+        title: Optional document title
+        description: Optional document description
+        document_type: Optional document type
+        db: Database session
+        
+    Returns:
+        Dictionary with document_id (UUID)
+        
+    Raises:
+        HTTPException: If upload fails
+    """
+    try:
+        # Read file content
+        file_content = await file.read()
+        filename = file.filename or "document"
+        
+        # Create service and upload
+        service = DocumentService(db)
+        document_id = service.upload_document(
+            user_id=user_id,
+            file_content=file_content,
+            filename=filename,
+            title=title,
+            description=description,
+            document_type=document_type,
+        )
+        
+        return {
+            "document_id": str(document_id),
+        }
+        
+    except UnsupportedFileTypeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except DocumentServiceError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Document upload failed: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )
