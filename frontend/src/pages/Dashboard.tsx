@@ -1,23 +1,8 @@
-import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 
 const Dashboard = () => {
   const navigate = useNavigate();
-
-  useEffect(() => {
-    // Check if user is authenticated
-    const isAuthenticated = localStorage.getItem("isAuthenticated");
-    if (!isAuthenticated) {
-      navigate("/");
-    }
-  }, [navigate]);
-
-  const handleLogout = () => {
-    localStorage.removeItem("isAuthenticated");
-    localStorage.removeItem("rememberMe");
-    navigate("/");
-  };
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center px-4">
@@ -46,12 +31,6 @@ const Dashboard = () => {
               className="border-primary text-primary hover:bg-primary hover:text-white"
             >
               Go to Check-in
-            </Button>
-            <Button
-              onClick={handleLogout}
-              variant="secondary"
-            >
-              Logout
             </Button>
           </div>
         </div>

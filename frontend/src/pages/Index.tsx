@@ -3,13 +3,11 @@ import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Calendar, HeartPulse, Users, BarChart3, FileCheck, Target, PenTool } from "lucide-react";
-import { UniversityPasswordModal } from "@/components/auth/UniversityPasswordModal";
 import { TypingAnimation } from "@/components/TypingAnimation";
 import { useToast } from "@/hooks/use-toast";
 
 const Index = () => {
   const navigate = useNavigate();
-  const [universityPasswordOpen, setUniversityPasswordOpen] = useState(false);
   const [expandedCard, setExpandedCard] = useState<number | null>(null);
   const { toast } = useToast();
 
@@ -50,7 +48,7 @@ const Index = () => {
       icon: BarChart3,
       title: "Institutional Dashboard",
       description: "Real-time institutional analytics, risk, funding, and performance tracking.",
-      requiresPassword: true
+      route: "/university-dashboard"
     },
     {
       icon: Target,
@@ -62,9 +60,7 @@ const Index = () => {
   ];
 
   const handleFeatureClick = (feature: typeof features[0]) => {
-    if (feature.requiresPassword) {
-      setUniversityPasswordOpen(true);
-    } else if (feature.route) {
+    if (feature.route) {
       navigate(feature.route);
     }
   };
@@ -259,12 +255,6 @@ const Index = () => {
           </div>
         </div>
       </footer>
-
-      {/* University Password Modal */}
-      <UniversityPasswordModal 
-        open={universityPasswordOpen} 
-        onOpenChange={setUniversityPasswordOpen} 
-      />
     </div>
   );
 };

@@ -1,12 +1,10 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { UniversityPasswordModal } from "@/components/auth/UniversityPasswordModal";
 import { InstitutionalAccessModal } from "@/components/auth/InstitutionalAccessModal";
 
 export const Header = () => {
   const location = useLocation();
-  const [universityPasswordOpen, setUniversityPasswordOpen] = useState(false);
   const [institutionalAccessOpen, setInstitutionalAccessOpen] = useState(false);
 
   const isActive = (path: string) => location.pathname === path;
@@ -74,12 +72,14 @@ export const Header = () => {
           >
             Network
           </Link>
-          <button
-            onClick={() => setUniversityPasswordOpen(true)}
-            className="text-white hover:text-primary transition-colors pb-1 text-sm"
+          <Link
+            to="/university-dashboard"
+            className={`text-white hover:text-primary transition-colors pb-1 text-sm ${
+              isActive("/university-dashboard") ? "nav-link-active" : ""
+            }`}
           >
             University
-          </button>
+          </Link>
         </nav>
 
         {/* Right Side Button */}
@@ -90,9 +90,6 @@ export const Header = () => {
           Request Institutional Access
         </Button>
       </div>
-      
-      {/* University Password Modal */}
-      <UniversityPasswordModal open={universityPasswordOpen} onOpenChange={setUniversityPasswordOpen} />
       
       {/* Institutional Access Modal */}
       <InstitutionalAccessModal open={institutionalAccessOpen} onOpenChange={setInstitutionalAccessOpen} />
