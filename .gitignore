@@ -10,8 +10,9 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Python venv lib (root-only so frontend/src/lib is not ignored)
+/lib/
+/lib64/
 parts/
 sdist/
 var/
