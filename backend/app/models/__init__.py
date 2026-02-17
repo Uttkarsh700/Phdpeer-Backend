@@ -23,6 +23,7 @@ from app.models.opportunity import (
     OpportunityFeedSnapshot,
     OpportunityFeedItem,
 )
+from app.models.supervisor_assignment import SupervisorAssignment
 
 # Import Base from database for Alembic
 from app.database import Base
@@ -49,6 +50,7 @@ __all__ = [
     'OpportunityCatalog',
     'OpportunityFeedSnapshot',
     'OpportunityFeedItem',
+    'SupervisorAssignment',
 ]
 
 # Ensure all models are imported for Alembic to detect them
