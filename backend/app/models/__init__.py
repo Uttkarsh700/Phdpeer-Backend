@@ -24,6 +24,7 @@ from app.models.opportunity import (
     OpportunityFeedItem,
 )
 from app.models.supervisor_assignment import SupervisorAssignment
+from app.models.longitudinal_event import LongitudinalEvent
 
 # Import Base from database for Alembic
 from app.database import Base
@@ -51,6 +52,7 @@ __all__ = [
     'OpportunityFeedSnapshot',
     'OpportunityFeedItem',
     'SupervisorAssignment',
+    'LongitudinalEvent',
 ]
 
 # Ensure all models are imported for Alembic to detect them
