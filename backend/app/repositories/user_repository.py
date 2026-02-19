@@ -1,0 +1,15 @@
+"""User repository."""
+from uuid import UUID
+
+from app.models.user import User
+from app.repositories.base import BaseRepository
+
+
+class UserRepository(BaseRepository):
+    """Data access for User entities."""
+
+    def get_by_id(self, user_id: UUID) -> User | None:
+        return self.db.query(User).filter(User.id == user_id).first()
+
+    def get_active_by_id(self, user_id: UUID) -> User | None:
+        return self.db.query(User).filter(User.id == user_id, User.is_active.is_(True)).first()

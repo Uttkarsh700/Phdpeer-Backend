@@ -1,10 +1,23 @@
 """ProgressEvent model."""
-from sqlalchemy import Column, String, Text, Date, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from enum import Enum
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Enum as SqlEnum, Index, func
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 
 from app.database import Base
 from app.models.base import BaseModel
+
+
+class ProgressEventType(str, Enum):
+    """Allowed progress event types."""
+
+    MILESTONE_COMPLETED = "milestone_completed"
+    MILESTONE_DELAYED = "milestone_delayed"
+    STAGE_STARTED = "stage_started"
+    STAGE_COMPLETED = "stage_completed"
+    ACHIEVEMENT = "achievement"
+    BLOCKER = "blocker"
+    UPDATE = "update"
 
 
 class ProgressEvent(Base, BaseModel):
@@ -20,9 +33,9 @@ class ProgressEvent(Base, BaseModel):
         event_type: Type of event (achievement, blocker, update, etc.)
         title: Event title
         description: Event description
-        event_date: Date of the event
+        event_date: DateTime of the event (timezone-aware)
         impact_level: Impact level (low, medium, high)
-        tags: Comma-separated tags for categorization
+        tags: Tag array for categorization
         notes: Additional notes
     """
     
@@ -40,14 +53,21 @@ class ProgressEvent(Base, BaseModel):
         nullable=True,
         index=True
     )
-    event_type = Column(String, nullable=False)
+    event_type = Column(
+        SqlEnum(ProgressEventType, name="progress_event_type"),
+        nullable=False,
+    )
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
-    event_date = Column(Date, nullable=False)
+    event_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     impact_level = Column(String, nullable=True)
-    tags = Column(String, nullable=True)
+    tags = Column(ARRAY(String), nullable=True)
     notes = Column(Text, nullable=True)
     
     # Relationships
     user = relationship("User", back_populates="progress_events")
     milestone = relationship("TimelineMilestone", back_populates="progress_events")
+
+    __table_args__ = (
+        Index("ix_progress_events_tags_gin", "tags", postgresql_using="gin"),
+    )

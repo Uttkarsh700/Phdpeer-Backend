@@ -15,12 +15,8 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app.orchestrators.base import BaseOrchestrator
-from app.models.user import User
-from app.models.opportunity import (
-    OpportunityCatalog,
-    OpportunityFeedSnapshot,
-    OpportunityFeedItem,
-)
+from app.models.user import User, SubscriptionTier
+from app.models.opportunity import OpportunityFeedSnapshot
 from app.models.committed_timeline import CommittedTimeline
 from app.services.opportunity_relevance_engine import (
     OpportunityRelevanceEngine,
@@ -31,8 +27,9 @@ from app.services.opportunity_relevance_engine import (
     OpportunityType,
 )
 from app.data.opportunities_catalog import get_active_opportunities
-from app.core.event_taxonomy import EventType
-from app.services.event_store import emit_event
+from app.repositories.opportunity_repository import OpportunityRepository
+from app.repositories.timeline_repository import TimelineRepository
+from app.repositories.user_repository import UserRepository
 
 
 class OpportunityFeedOrchestratorError(Exception):
@@ -76,7 +73,10 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
             user_id: Optional user ID
         """
         super().__init__(db, user_id)
-        self.relevance_engine = OpportunityRelevanceEngine()
+        self.relevance_engine = OpportunityRelevanceEngine(db)
+        self.user_repository = UserRepository(db)
+        self.timeline_repository = TimelineRepository(db)
+        self.opportunity_repository = OpportunityRepository(db)
     
     def generate_feed(
         self,
@@ -176,7 +176,9 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         
         # Step 3: Filter by subscription tier
         with self._trace_step("apply_subscription_filter") as step:
-            user = self.db.query(User).filter(User.id == user_id).first()
+            user = self.user_repository.get_by_id(user_id)
+            if not user:
+                raise OpportunityFeedOrchestratorError(f"User {user_id} not found")
             filtered_opportunities = self._filter_by_subscription(
                 opportunities,
                 user,
@@ -186,7 +188,7 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
                 "before_filter": len(opportunities),
                 "after_filter": len(filtered_opportunities),
                 "filtered_out": len(opportunities) - len(filtered_opportunities),
-                "user_subscription_tier": getattr(user, "subscription_tier", None)
+                "user_subscription_tier": user.subscription_tier.value
             }
             self.add_evidence(
                 evidence_type="subscription_filter",
@@ -236,7 +238,8 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
                 timeline_context=timeline_context,
                 ranked_scores=ranked_scores,
                 feed_type=feed_type,
-                total_scored=len(ranked_scores)
+                total_scored=len(ranked_scores),
+                user_subscription_tier=user.subscription_tier.value,
             )
             step.details = {
                 "snapshot_id": str(snapshot_id),
@@ -279,7 +282,7 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         Raises:
             OpportunityFeedOrchestratorError: If user not found
         """
-        user = self.db.query(User).filter(User.id == user_id).first()
+        user = self.user_repository.get_by_id(user_id)
         if not user:
             raise OpportunityFeedOrchestratorError(f"User {user_id} not found")
         
@@ -292,9 +295,7 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         stage = ResearchStage.EARLY  # Default
         
         # Check if user has a committed timeline to better determine stage
-        timeline = self.db.query(CommittedTimeline).filter(
-            CommittedTimeline.user_id == user_id
-        ).order_by(CommittedTimeline.created_at.desc()).first()
+        timeline = self.timeline_repository.get_latest_committed_timeline_for_user(user_id)
         
         timeline_context = None
         if timeline:
@@ -328,12 +329,7 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         timeline: CommittedTimeline
     ) -> Optional[TimelineContext]:
         """Extract timeline context from committed timeline."""
-        # Get stages and milestones
-        stages = self.db.query(
-            from app.models.timeline_stage import TimelineStage
-        ).filter(
-            TimelineStage.committed_timeline_id == timeline.id
-        ).order_by(TimelineStage.order_index).all()
+        stages = self.timeline_repository.get_stages_for_committed_timeline(timeline.id)
         
         if not stages:
             return None
@@ -347,25 +343,32 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         # Get upcoming stages
         current_idx = stages.index(current_stage)
         upcoming_stages = [
-            s.stage_name
+            s.title
             for s in stages[current_idx + 1:current_idx + 3]
         ]
         
-        # Get critical milestones (from current and next stage)
-        from app.models.timeline_milestone import TimelineMilestone
-        upcoming_milestones = self.db.query(TimelineMilestone).filter(
-            TimelineMilestone.stage_id.in_([
-                s.id for s in stages[current_idx:current_idx + 2]
-            ]),
-            TimelineMilestone.is_completed == False
-        ).limit(3).all()
+        upcoming_milestones = self.timeline_repository.get_milestones_for_stage_ids(
+            stage_ids=[s.id for s in stages[current_idx:current_idx + 2]],
+            only_incomplete=True,
+            limit=3,
+        )
+
+        current_stage_milestones = self.timeline_repository.get_milestones_for_stage_ids(
+            stage_ids=[current_stage.id],
+        )
+        completed_count = len([m for m in current_stage_milestones if m.is_completed])
+        current_stage_progress = (
+            completed_count / len(current_stage_milestones)
+            if current_stage_milestones
+            else 0.0
+        )
         
         return TimelineContext(
-            current_stage_name=current_stage.stage_name,
-            current_stage_progress=current_stage.progress_percentage / 100 if current_stage.progress_percentage else 0.0,
+            current_stage_name=current_stage.title,
+            current_stage_progress=current_stage_progress,
             upcoming_stages=upcoming_stages,
-            critical_milestones=[m.milestone_name for m in upcoming_milestones],
-            expected_completion_date=timeline.expected_completion_date
+            critical_milestones=[m.title for m in upcoming_milestones],
+            expected_completion_date=timeline.target_completion_date,
         )
     
     def _load_opportunities_catalog(self) -> List[Opportunity]:
@@ -431,14 +434,27 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
             if catalog_entry.get("requires_subscription", False):
                 # Only include if user has appropriate subscription and include_premium is True
                 if include_premium:
-                    # In production, verify user.subscription_tier matches required tier
-                    user_tier = getattr(user, "subscription_tier", None)
+                    # Validate user tier against required tier
+                    user_tier = user.subscription_tier
                     required_tier = catalog_entry.get("subscription_tier")
-                    
-                    # For demo, allow if user has any subscription_tier attribute
-                    if user_tier:
+
+                    if required_tier in {None, "free"}:
                         filtered.append(opp)
-                    # Otherwise, skip premium opportunity
+                        continue
+
+                    try:
+                        required_tier_enum = SubscriptionTier(required_tier)
+                    except ValueError:
+                        continue
+
+                    tier_rank = {
+                        SubscriptionTier.FREE: 1,
+                        SubscriptionTier.TEAM: 2,
+                        SubscriptionTier.INSTITUTIONAL: 3,
+                    }
+
+                    if tier_rank[user_tier] >= tier_rank[required_tier_enum]:
+                        filtered.append(opp)
                 # If include_premium is False, skip
             else:
                 # Free opportunity, always include
@@ -453,7 +469,8 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         timeline_context: Optional[TimelineContext],
         ranked_scores: List[Any],
         feed_type: str,
-        total_scored: int
+        total_scored: int,
+        user_subscription_tier: str,
     ) -> UUID:
         """
         Store feed snapshot and items in database.
@@ -469,10 +486,8 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         Returns:
             UUID of created feed snapshot
         """
-        # Create feed snapshot
-        snapshot = OpportunityFeedSnapshot(
+        snapshot = self.opportunity_repository.create_feed_snapshot(
             user_id=user_id,
-            snapshot_date=date.today(),
             user_profile_snapshot={
                 "discipline": user_profile.discipline,
                 "subdisciplines": user_profile.subdisciplines,
@@ -487,22 +502,9 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
             } if timeline_context else None,
             total_opportunities_scored=total_scored,
             feed_type=feed_type,
-            subscription_tier=None  # Would get from user in production
+            subscription_tier=user_subscription_tier,
         )
         
-        self.db.add(snapshot)
-        self.db.flush()
-        user = self.db.query(User).filter(User.id == user_id).first()
-        emit_event(
-            self.db,
-            user_id=user_id,
-            role=getattr(user, "role", "researcher"),
-            event_type=EventType.OPPORTUNITY_SAVED.value,
-            source_module="opportunity_feed",
-            entity_type="opportunity_feed_snapshot",
-            entity_id=snapshot.id,
-            metadata={"feed_type": feed_type, "total_scored": total_scored},
-        )
         # Store feed items
         # First, get or create opportunity catalog entries
         catalog_data = get_active_opportunities()
@@ -514,52 +516,19 @@ class OpportunityFeedOrchestrator(BaseOrchestrator[Dict[str, Any]]):
             if not catalog_entry_data:
                 continue
             
-            catalog_entry = self.db.query(OpportunityCatalog).filter(
-                OpportunityCatalog.opportunity_id == score.opportunity_id
-            ).first()
+            catalog_entry = self.opportunity_repository.get_catalog_by_opportunity_id(
+                score.opportunity_id,
+            )
             
             if not catalog_entry:
-                # Create catalog entry
-                catalog_entry = OpportunityCatalog(
-                    opportunity_id=catalog_entry_data["opportunity_id"],
-                    title=catalog_entry_data["title"],
-                    opportunity_type=catalog_entry_data["opportunity_type"],
-                    disciplines=catalog_entry_data["disciplines"],
-                    eligible_stages=catalog_entry_data["eligible_stages"],
-                    deadline=catalog_entry_data["deadline"],
-                    description=catalog_entry_data.get("description"),
-                    keywords=catalog_entry_data.get("keywords", []),
-                    funding_amount=catalog_entry_data.get("funding_amount"),
-                    prestige_level=catalog_entry_data.get("prestige_level"),
-                    geographic_scope=catalog_entry_data.get("geographic_scope"),
-                    source_url=catalog_entry_data.get("source_url"),
-                    organization=catalog_entry_data.get("organization"),
-                    is_active=True,
-                    requires_subscription=catalog_entry_data.get("requires_subscription", False),
-                    subscription_tier=catalog_entry_data.get("subscription_tier")
-                )
-                self.db.add(catalog_entry)
-                self.db.flush()
+                catalog_entry = self.opportunity_repository.create_catalog_entry(catalog_entry_data)
             
-            # Create feed item
-            feed_item = OpportunityFeedItem(
+            self.opportunity_repository.add_feed_item(
                 feed_snapshot_id=snapshot.id,
-                opportunity_id=catalog_entry.id,
+                opportunity_catalog_id=catalog_entry.id,
                 rank=rank,
-                overall_score=score.overall_score,
-                discipline_score=score.discipline_score,
-                stage_score=score.stage_score,
-                timeline_score=score.timeline_score,
-                deadline_score=score.deadline_score,
-                reason_tags=[tag.value for tag in score.reason_tags],
-                explanation=score.explanation,
-                urgency_level=score.urgency_level,
-                recommended_action=score.recommended_action
+                score=score,
             )
-            self.db.add(feed_item)
-        
-        self.db.commit()
-        self.db.refresh(snapshot)
         
         return snapshot.id
     

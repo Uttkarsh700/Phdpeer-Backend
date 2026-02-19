@@ -13,9 +13,7 @@ from app.models.timeline_stage import TimelineStage
 from app.models.timeline_milestone import TimelineMilestone
 from app.models.analytics_snapshot import AnalyticsSnapshot
 from app.services.progress_service import ProgressService
-from app.services.temporal_engine import TemporalEngine
-
-logger = logging.getLogger(__name__)
+from app.services.risk_fusion_engine import RiskFusionEngine
 
 
 @dataclass
@@ -764,8 +762,8 @@ class AnalyticsEngine:
         if overdue_critical_count > 0:
             return "delayed"
         
-        # More than 20% overdue
-        overdue_threshold = len(milestones) * 0.2
+        overdue_ratio_threshold = RiskFusionEngine.get_overdue_ratio_delayed_threshold(self.db)
+        overdue_threshold = len(milestones) * overdue_ratio_threshold
         if overdue_count > overdue_threshold:
             return "delayed"
         

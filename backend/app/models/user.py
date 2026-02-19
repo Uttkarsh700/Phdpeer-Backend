@@ -1,5 +1,6 @@
 """User model."""
-from sqlalchemy import Column, String, Boolean
+from enum import Enum
+from sqlalchemy import Column, String, Boolean, Enum as SqlEnum
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -7,6 +8,22 @@ from app.models.base import BaseModel
 
 # Role values: researcher | supervisor | institution_admin
 DEFAULT_ROLE = "researcher"
+
+
+class UserRole(str, Enum):
+    """Supported platform roles."""
+
+    RESEARCHER = "researcher"
+    SUPERVISOR = "supervisor"
+    INSTITUTIONAL_ADMIN = "institutional_admin"
+
+
+class SubscriptionTier(str, Enum):
+    """Supported subscription tiers."""
+
+    FREE = "free"
+    TEAM = "team"
+    INSTITUTIONAL = "institutional"
 
 
 class User(Base, BaseModel):
@@ -32,6 +49,18 @@ class User(Base, BaseModel):
     role = Column(String, default=DEFAULT_ROLE, nullable=False, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
     is_superuser = Column(Boolean, default=False, nullable=False)
+    role = Column(
+        SqlEnum(UserRole, name="user_role"),
+        default=UserRole.RESEARCHER,
+        nullable=False,
+        index=True,
+    )
+    subscription_tier = Column(
+        SqlEnum(SubscriptionTier, name="subscription_tier"),
+        default=SubscriptionTier.FREE,
+        nullable=False,
+        index=True,
+    )
     institution = Column(String, nullable=True)
     field_of_study = Column(String, nullable=True)
     

@@ -1,5 +1,4 @@
 """Application configuration management."""
-from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,19 +20,15 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     # CORS
-    ALLOWED_ORIGINS: List[str] = ["http://localhost:3000"]
+    FRONTEND_URL: str
     
     # API
     API_V1_PREFIX: str = "/api/v1"
 
-    # LLM Configuration
-    LLM_PROVIDER: str = "anthropic"
-    LLM_API_KEY: str = ""
-    LLM_MODEL: str = "claude-sonnet-4-20250514"
-    LLM_TEMPERATURE: float = 0.15
-    LLM_MAX_TOKENS: int = 4096
-    LLM_TIMEOUT_SECONDS: int = 60
-
+    # Documentation exposure
+    PUBLIC_DOCS_ENABLED: bool = False
+    PUBLIC_OPENAPI_ENABLED: bool = False
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,

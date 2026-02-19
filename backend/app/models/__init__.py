@@ -5,14 +5,14 @@ Imports all SQLAlchemy models for application use.
 """
 
 from app.models.base import BaseModel
-from app.models.user import User
+from app.models.user import User, UserRole, SubscriptionTier
 from app.models.document_artifact import DocumentArtifact
 from app.models.baseline import Baseline
 from app.models.draft_timeline import DraftTimeline
 from app.models.committed_timeline import CommittedTimeline
 from app.models.timeline_stage import TimelineStage
 from app.models.timeline_milestone import TimelineMilestone
-from app.models.progress_event import ProgressEvent
+from app.models.progress_event import ProgressEvent, ProgressEventType
 from app.models.journey_assessment import JourneyAssessment
 from app.models.idempotency import IdempotencyKey, DecisionTrace, EvidenceBundle
 from app.models.timeline_edit_history import TimelineEditHistory
@@ -25,22 +25,15 @@ from app.models.opportunity import (
     OpportunityFeedSnapshot,
     OpportunityFeedItem,
 )
-from app.models.supervisor_assignment import SupervisorAssignment
-from app.models.longitudinal_event import LongitudinalEvent
-from app.models.document_stage_suggestion import DocumentStageSuggestion
-from app.models.engagement_event import EngagementEvent
-from app.models.user_opportunity import UserOpportunity
-from app.models.supervision_session import SupervisionSession
-from app.models.writing_version import WritingVersion
-from app.models.timeline_adjustment_suggestion import TimelineAdjustmentSuggestion
-
-# Import Base from database for Alembic
-from app.database import Base
+from app.models.risk_fusion import RiskWeightConfig, RiskAssessmentSnapshot
+from app.models.scoring_config import ScoringConfig
 
 __all__ = [
     'Base',
     'BaseModel',
     'User',
+    'UserRole',
+    'SubscriptionTier',
     'DocumentArtifact',
     'Baseline',
     'DraftTimeline',
@@ -48,6 +41,7 @@ __all__ = [
     'TimelineStage',
     'TimelineMilestone',
     'ProgressEvent',
+    'ProgressEventType',
     'JourneyAssessment',
     'IdempotencyKey',
     'DecisionTrace',
@@ -61,14 +55,9 @@ __all__ = [
     'OpportunityCatalog',
     'OpportunityFeedSnapshot',
     'OpportunityFeedItem',
-    'SupervisorAssignment',
-    'LongitudinalEvent',
-    'DocumentStageSuggestion',
-    'EngagementEvent',
-    'UserOpportunity',
-    'SupervisionSession',
-    'WritingVersion',
-    'TimelineAdjustmentSuggestion',
+    'RiskWeightConfig',
+    'RiskAssessmentSnapshot',
+    'ScoringConfig',
 ]
 
 # Ensure all models are imported for Alembic to detect them

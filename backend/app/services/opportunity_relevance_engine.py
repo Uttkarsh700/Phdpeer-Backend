@@ -15,6 +15,10 @@ from typing import List, Optional, Set, Dict, Any
 from datetime import date, timedelta
 from enum import Enum
 
+from sqlalchemy.orm import Session
+
+from app.services.scoring_config_service import ScoringConfigService
+
 
 class ResearchStage(Enum):
     """PhD research stage."""
@@ -141,6 +145,25 @@ class OpportunityRelevanceEngine:
     STAGE_WEIGHT = 0.30
     TIMELINE_WEIGHT = 0.25
     DEADLINE_WEIGHT = 0.15
+    CONFIG_NAME = "opportunity_relevance"
+    DEFAULT_VERSION = "opportunity_relevance_v1"
+
+    def __init__(self, db: Optional[Session] = None):
+        self._scoring_version = self.DEFAULT_VERSION
+        self._weights = {
+            "discipline": self.DISCIPLINE_WEIGHT,
+            "stage": self.STAGE_WEIGHT,
+            "timeline": self.TIMELINE_WEIGHT,
+            "deadline": self.DEADLINE_WEIGHT,
+        }
+        if db is not None:
+            resolved = ScoringConfigService(db).resolve(
+                engine_name=self.CONFIG_NAME,
+                default_version=self.DEFAULT_VERSION,
+                default_weights=self._weights,
+            )
+            self._scoring_version = resolved.version
+            self._weights = resolved.weights
     
     # Discipline taxonomy (broad categories)
     DISCIPLINE_TAXONOMY = {
@@ -253,10 +276,10 @@ class OpportunityRelevanceEngine:
         
         # Calculate overall score
         overall_score = (
-            discipline_score * self.DISCIPLINE_WEIGHT +
-            stage_score * self.STAGE_WEIGHT +
-            timeline_score * self.TIMELINE_WEIGHT +
-            deadline_score * self.DEADLINE_WEIGHT
+            discipline_score * self._weights["discipline"] +
+            stage_score * self._weights["stage"] +
+            timeline_score * self._weights["timeline"] +
+            deadline_score * self._weights["deadline"]
         )
         
         # Determine urgency and recommendation

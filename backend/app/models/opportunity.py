@@ -64,7 +64,7 @@ class OpportunityCatalog(Base, BaseModel):
     
     # Subscription gating
     requires_subscription = Column(Boolean, default=False, nullable=False)
-    subscription_tier = Column(String(50), nullable=True)  # "premium", "pro", etc.
+    subscription_tier = Column(String(50), nullable=True)  # "free", "team", "institutional"
     
     # Relationships
     feed_items = relationship("OpportunityFeedItem", back_populates="opportunity")

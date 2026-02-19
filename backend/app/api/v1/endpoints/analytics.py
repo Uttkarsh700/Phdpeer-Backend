@@ -4,30 +4,48 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
+from app.api.tier_access import requires_tier
 from app.database import get_db
-from app.core.security import get_current_user, require_permission, Permission
-from app.core.data_visibility import can_access_user_data
+from app.models.user import SubscriptionTier, User
 from app.orchestrators.analytics_orchestrator import (
     AnalyticsOrchestrator,
     AnalyticsOrchestratorError,
 )
-from app.models.user import User
-from app.models.analytics_snapshot import AnalyticsSnapshot
-from app.models.committed_timeline import CommittedTimeline
+from app.repositories.analytics_repository import AnalyticsRepository
+from app.repositories.timeline_repository import TimelineRepository
 
 router = APIRouter()
 
 
 @router.get("/summary")
+@requires_tier(SubscriptionTier.TEAM)
 async def get_analytics_summary(
     timeline_id: Optional[UUID] = Query(None, description="Optional timeline ID (uses latest if not provided)"),
-    user_id: UUID = Query(..., description="User ID (target; must be visible to current user)"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """
     Get analytics summary for a user's timeline.
-    RBAC: Researcher sees own only; Supervisor sees assigned students; Admin sees any.
+    
+    Behavior:
+    - Triggers AnalyticsOrchestrator.run() if no snapshot exists for timeline version
+    - Returns latest AnalyticsSnapshot
+    - Idempotent for same timeline version (returns cached snapshot)
+    
+    No side effects beyond snapshot creation.
+    
+    Args:
+        timeline_id: Optional committed timeline ID (uses latest if not provided)
+        current_user: Authenticated user
+        db: Database session
+        
+    Returns:
+        Dashboard-ready JSON with analytics summary
+        
+    Raises:
+        HTTPException: If analytics generation fails
     """
     if not can_access_user_data(db, current_user, user_id):
         raise HTTPException(
@@ -35,12 +53,16 @@ async def get_analytics_summary(
             detail="Not allowed to access this user's analytics",
         )
     try:
+        user_id = current_user.id
+        timeline_repository = TimelineRepository(db)
+        analytics_repository = AnalyticsRepository(db)
+
         # Get committed timeline to determine version
         if timeline_id:
-            committed_timeline = db.query(CommittedTimeline).filter(
-                CommittedTimeline.id == timeline_id,
-                CommittedTimeline.user_id == user_id
-            ).first()
+            committed_timeline = timeline_repository.get_committed_timeline_for_user(
+                timeline_id=timeline_id,
+                user_id=user_id,
+            )
             if not committed_timeline:
                 raise HTTPException(
                     status_code=404,
@@ -52,13 +74,10 @@ async def get_analytics_summary(
                 f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"analytics.py:58","message":"Querying for latest committed timeline","data":{"user_id":str(user_id)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
             # #endregion
             # Get latest committed timeline
-            committed_timeline = db.query(CommittedTimeline).filter(
-                CommittedTimeline.user_id == user_id
-            ).order_by(CommittedTimeline.committed_date.desc()).first()
-            # #region agent log
-            with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"analytics.py:63","message":"Committed timeline query result","data":{"found":committed_timeline is not None,"timeline_id":str(committed_timeline.id) if committed_timeline else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
-            # #endregion
+            committed_timeline = timeline_repository.get_latest_committed_timeline_for_user(
+                user_id=user_id,
+            )
+            
             if not committed_timeline:
                 # #region agent log
                 with open(r'd:\Frensei-Engine\.cursor\debug.log', 'a') as f:
@@ -73,10 +92,9 @@ async def get_analytics_summary(
         # Try to get version from draft_timeline
         timeline_version = "1.0"  # Default
         if committed_timeline.draft_timeline_id:
-            from app.models.draft_timeline import DraftTimeline
-            draft = db.query(DraftTimeline).filter(
-                DraftTimeline.id == committed_timeline.draft_timeline_id
-            ).first()
+            draft = timeline_repository.get_draft_timeline_by_id(
+                committed_timeline.draft_timeline_id
+            )
             if draft and draft.version_number:
                 timeline_version = draft.version_number
         
@@ -88,10 +106,10 @@ async def get_analytics_summary(
                 timeline_version = match.group(1)
         
         # Check if snapshot already exists for this timeline version (idempotency)
-        existing_snapshot = db.query(AnalyticsSnapshot).filter(
-            AnalyticsSnapshot.user_id == user_id,
-            AnalyticsSnapshot.timeline_version == timeline_version
-        ).order_by(AnalyticsSnapshot.created_at.desc()).first()
+        existing_snapshot = analytics_repository.get_latest_snapshot_for_user_and_version(
+            user_id=user_id,
+            timeline_version=timeline_version,
+        )
         
         if existing_snapshot:
             # Return existing snapshot (idempotent)
@@ -110,7 +128,7 @@ async def get_analytics_summary(
         # #endregion
         orchestrator = AnalyticsOrchestrator(db, user_id)
         request_id = f"analytics-{user_id}-{committed_timeline.id}-{timeline_version}"
-        result = orchestrator.run(
+        orchestrator.run(
             request_id=request_id,
             user_id=user_id,
             timeline_id=committed_timeline.id
@@ -121,10 +139,10 @@ async def get_analytics_summary(
         # #endregion
         
         # Get the newly created snapshot
-        new_snapshot = db.query(AnalyticsSnapshot).filter(
-            AnalyticsSnapshot.user_id == user_id,
-            AnalyticsSnapshot.timeline_version == timeline_version
-        ).order_by(AnalyticsSnapshot.created_at.desc()).first()
+        new_snapshot = analytics_repository.get_latest_snapshot_for_user_and_version(
+            user_id=user_id,
+            timeline_version=timeline_version,
+        )
         
         if not new_snapshot:
             raise HTTPException(

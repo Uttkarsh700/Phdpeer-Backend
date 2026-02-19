@@ -6,8 +6,6 @@ from sqlalchemy.orm import Session
 import json
 
 from app.orchestrators.base import BaseOrchestrator
-from app.models.analytics_snapshot import AnalyticsSnapshot
-from app.models.user import User
 from app.models.committed_timeline import CommittedTimeline
 from app.services.analytics_engine import (
     AnalyticsEngine,
@@ -16,11 +14,12 @@ from app.services.analytics_engine import (
     TimeSeriesSummary,
     StatusIndicator,
 )
-from app.models.progress_event import ProgressEvent
-from app.models.journey_assessment import JourneyAssessment
-from app.models.timeline_stage import TimelineStage
-from app.models.timeline_milestone import TimelineMilestone
-from app.models.idempotency import DecisionTrace, EvidenceBundle
+from app.repositories.analytics_repository import AnalyticsRepository
+from app.repositories.assessment_repository import AssessmentRepository
+from app.repositories.progress_event_repository import ProgressEventRepository
+from app.repositories.timeline_repository import TimelineRepository
+from app.repositories.user_repository import UserRepository
+from app.services.risk_fusion_engine import RiskFusionEngine, RiskInput, RiskOutput
 
 
 class AnalyticsOrchestratorError(Exception):
@@ -83,8 +82,12 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         """
         super().__init__(db, user_id)
         self.analytics_engine = AnalyticsEngine(db)
-        self._read_operations = []  # Track read operations for validation
-        self._write_operations = []  # Track write operations for validation
+        self.user_repository = UserRepository(db)
+        self.timeline_repository = TimelineRepository(db)
+        self.progress_event_repository = ProgressEventRepository(db)
+        self.assessment_repository = AssessmentRepository(db)
+        self.analytics_repository = AnalyticsRepository(db)
+        self.risk_fusion_engine = RiskFusionEngine(db)
     
     def run(
         self,
@@ -211,28 +214,26 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
                 timeline_id=timeline_id
             )
             
-            # Validate user exists (READ operation)
-            user = self._tracked_read(User, User.id == user_id).first()
+            # Validate user exists
+            user = self.user_repository.get_by_id(user_id)
             if not user:
                 raise AnalyticsOrchestratorError(f"User with ID {user_id} not found")
             
             # Get committed timeline (READ operation)
             if timeline_id:
-                committed_timeline = self._tracked_read(
-                    CommittedTimeline,
-                    CommittedTimeline.id == timeline_id,
-                    CommittedTimeline.user_id == user_id
-                ).first()
+                committed_timeline = self.timeline_repository.get_committed_timeline_for_user(
+                    timeline_id=timeline_id,
+                    user_id=user_id,
+                )
                 if not committed_timeline:
                     raise AnalyticsOrchestratorError(
                         f"Timeline {timeline_id} not found or not owned by user {user_id}"
                     )
             else:
                 # Get latest committed timeline
-                committed_timeline = self._tracked_read(
-                    CommittedTimeline,
-                    CommittedTimeline.user_id == user_id
-                ).order_by(CommittedTimeline.committed_date.desc()).first()
+                committed_timeline = self.timeline_repository.get_latest_committed_timeline_for_user(
+                    user_id=user_id,
+                )
                 
                 if not committed_timeline:
                     raise AnalyticsOrchestratorError(
@@ -258,35 +259,22 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         
         # Step 2: Load data (read-only, no mutations)
         with self._trace_step("load_data") as step:
-            # Get all milestones for this timeline to find progress events (READ operations)
-            stages = self._tracked_read(
-                TimelineStage,
-                TimelineStage.committed_timeline_id == committed_timeline.id
-            ).all()
-            
-            milestone_ids = []
-            for stage in stages:
-                milestones = self._tracked_read(
-                    TimelineMilestone,
-                    TimelineMilestone.timeline_stage_id == stage.id
-                ).all()
-                milestone_ids.extend([m.id for m in milestones])
-            
-            # Load ProgressEvents (READ operation)
-            if milestone_ids:
-                progress_events = self._tracked_read(
-                    ProgressEvent,
-                    ProgressEvent.user_id == user_id,
-                    ProgressEvent.milestone_id.in_(milestone_ids)
-                ).order_by(ProgressEvent.event_date.asc()).all()
-            else:
-                progress_events = []
-            
-            # Load latest JourneyAssessment (READ operation)
-            latest_assessment = self._tracked_read(
-                JourneyAssessment,
-                JourneyAssessment.user_id == user_id
-            ).order_by(JourneyAssessment.assessment_date.desc()).first()
+            stages = self.timeline_repository.get_stages_for_committed_timeline(
+                committed_timeline.id,
+            )
+            milestone_ids = [
+                milestone.id
+                for milestone in self.timeline_repository.get_milestones_for_stage_ids(
+                    [stage.id for stage in stages]
+                )
+            ]
+
+            progress_events = self.progress_event_repository.list_by_user_and_milestone_ids(
+                user_id=user_id,
+                milestone_ids=milestone_ids,
+            )
+
+            latest_assessment = self.assessment_repository.get_latest_for_user(user_id)
             
             step.details = {
                 "progress_events_count": len(progress_events),
@@ -337,16 +325,44 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         with self._trace_step("persist_analytics_snapshot") as step:
             # Get timeline version from draft_timeline if available
             timeline_version = self._extract_timeline_version(committed_timeline)
+
+            supervision_latency_days = 999.0
+            if latest_assessment and latest_assessment.assessment_date:
+                supervision_latency_days = float((date.today() - latest_assessment.assessment_date).days)
+
+            overdue_ratio = (
+                analytics_summary.overdue_milestones / analytics_summary.total_milestones
+                if analytics_summary.total_milestones > 0
+                else 0.0
+            )
+
+            risk_input = RiskInput(
+                timeline_status=analytics_summary.timeline_status,
+                health_score=analytics_summary.latest_health_score or 50.0,
+                overdue_ratio=overdue_ratio,
+                supervision_latency=supervision_latency_days,
+            )
+            risk_output = self.risk_fusion_engine.compute(risk_input)
+            risk_snapshot_id = self.risk_fusion_engine.persist(
+                user_id=user_id,
+                timeline_id=committed_timeline.id,
+                risk_input=risk_input,
+                risk_output=risk_output,
+            )
             
             snapshot_id = self._persist_snapshot(
                 user_id=user_id,
                 timeline_version=timeline_version,
-                analytics_summary=analytics_summary
+                analytics_summary=analytics_summary,
+                risk_output=risk_output,
             )
             
             step.details = {
                 "snapshot_id": str(snapshot_id),
                 "timeline_version": timeline_version,
+                "risk_snapshot_id": str(risk_snapshot_id),
+                "composite_risk_score": risk_output.composite_score,
+                "risk_level": risk_output.risk_level,
             }
             
             self.add_evidence(
@@ -354,6 +370,8 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
                 data={
                     "snapshot_id": str(snapshot_id),
                     "timeline_version": timeline_version,
+                    "risk_snapshot_id": str(risk_snapshot_id),
+                    "risk_level": risk_output.risk_level,
                 },
                 source=f"AnalyticsSnapshot:{snapshot_id}",
                 confidence=1.0
@@ -369,7 +387,8 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         # Step 7: Return dashboard-ready JSON
         dashboard_json = self._build_dashboard_json_from_summary(
             analytics_summary=analytics_summary,
-            snapshot_id=snapshot_id
+            snapshot_id=snapshot_id,
+            risk_output=risk_output,
         )
         
         return dashboard_json
@@ -392,11 +411,9 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         """
         # Try to get version from draft_timeline
         if committed_timeline.draft_timeline_id:
-            from app.models.draft_timeline import DraftTimeline
-            draft = self._tracked_read(
-                DraftTimeline,
-                DraftTimeline.id == committed_timeline.draft_timeline_id
-            ).first()
+            draft = self.timeline_repository.get_draft_timeline_by_id(
+                committed_timeline.draft_timeline_id
+            )
             if draft and draft.version_number:
                 return draft.version_number
         
@@ -414,7 +431,8 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         self,
         user_id: UUID,
         timeline_version: str,
-        analytics_summary: AnalyticsSummary
+        analytics_summary: AnalyticsSummary,
+        risk_output: RiskOutput,
     ) -> UUID:
         """
         Persist analytics snapshot to database.
@@ -446,26 +464,30 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
             "max_delay_days": analytics_summary.max_delay_days,
             "latest_health_score": analytics_summary.latest_health_score,
             "health_dimensions": analytics_summary.health_dimensions,
-            "longitudinal_summary": analytics_summary.longitudinal_summary
+            "longitudinal_summary": analytics_summary.longitudinal_summary,
+            "risk_fusion": {
+                "composite_score": risk_output.composite_score,
+                "risk_level": risk_output.risk_level,
+                "contributing_signals": risk_output.contributing_signals,
+                "threshold_breaches": risk_output.threshold_breaches,
+                "scoring_version": risk_output.scoring_version,
+                "weight_snapshot": risk_output.weight_snapshot,
+            },
         }
         
-        # Create snapshot record (immutable) using tracked write
-        snapshot = AnalyticsSnapshot(
+        snapshot = self.analytics_repository.create_snapshot(
             user_id=user_id,
             timeline_version=timeline_version,
-            summary_json=summary_json
+            summary_json=summary_json,
         )
-        
-        self._tracked_write(snapshot)
-        self.db.commit()
-        self.db.refresh(snapshot)
-        
+
         return snapshot.id
     
     def _build_dashboard_json_from_summary(
         self,
         analytics_summary: AnalyticsSummary,
-        snapshot_id: UUID
+        snapshot_id: UUID,
+        risk_output: RiskOutput,
     ) -> Dict[str, Any]:
         """
         Build dashboard-ready JSON from analytics summary.
@@ -499,6 +521,14 @@ class AnalyticsOrchestrator(BaseOrchestrator[Dict[str, Any]]):
             "journey_health": {
                 "latest_score": analytics_summary.latest_health_score,
                 "dimensions": analytics_summary.health_dimensions,
+            },
+            "risk_fusion": {
+                "composite_score": risk_output.composite_score,
+                "risk_level": risk_output.risk_level,
+                "contributing_signals": risk_output.contributing_signals,
+                "threshold_breaches": risk_output.threshold_breaches,
+                "scoring_version": risk_output.scoring_version,
+                "weight_snapshot": risk_output.weight_snapshot,
             },
             "longitudinal_summary": analytics_summary.longitudinal_summary
         }

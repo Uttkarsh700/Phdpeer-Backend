@@ -65,56 +65,7 @@ class PhDDoctorOrchestrator(BaseOrchestrator[Dict[str, Any]]):
             user_id: Optional user ID
         """
         super().__init__(db, user_id)
-        self.health_engine = JourneyHealthEngine()
-    
-    def submit(
-        self,
-        request_id: str,
-        user_id: UUID,
-        responses: List[Dict[str, Any]],
-        draft_id: Optional[UUID] = None,
-        assessment_type: str = "self_assessment",
-        notes: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Submit questionnaire with idempotency and tracing.
-        
-        Steps:
-        1. Validate completeness
-        2. Compute scores
-        3. Persist JourneyAssessment
-        4. Write DecisionTrace (automatic via BaseOrchestrator)
-        
-        Isolation:
-        - No timeline access: Does not query or use timeline data
-        - No document access: Does not query or use document data
-        - Questionnaire-only: Only uses questionnaire responses
-        
-        Args:
-            request_id: Idempotency key
-            user_id: User ID
-            responses: List of questionnaire responses
-            draft_id: Optional draft ID to mark as submitted
-            assessment_type: Type of assessment
-            notes: Optional notes
-            
-        Returns:
-            Assessment summary with scores and recommendations
-            
-        Raises:
-            IncompleteSubmissionError: If submission incomplete
-            PhDDoctorOrchestratorError: If validation fails
-        """
-        return self.execute(
-            request_id=request_id,
-            input_data={
-                "user_id": str(user_id),
-                "responses": responses,
-                "draft_id": str(draft_id) if draft_id else None,
-                "assessment_type": assessment_type,
-                "notes": notes
-            }
-        )
+        self.health_engine = JourneyHealthEngine(db)
     
     def _execute_pipeline(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """

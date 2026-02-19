@@ -1,5 +1,5 @@
 """Progress service for tracking milestone completion and timeline progress."""
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional, Dict, List
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -10,6 +10,7 @@ from app.models.timeline_stage import TimelineStage
 from app.models.progress_event import ProgressEvent
 from app.models.committed_timeline import CommittedTimeline
 from app.models.user import User
+from app.services.risk_fusion_engine import RiskFusionEngine
 from app.utils.invariants import check_progress_event_has_milestone
 from app.core.event_taxonomy import EventType
 from app.services.event_store import emit_event
@@ -187,10 +188,10 @@ class ProgressService:
         event_type: str,
         title: str,
         description: str,
-        event_date: Optional[date] = None,
+        event_date: Optional[date | datetime] = None,
         milestone_id: Optional[UUID] = None,
         impact_level: Optional[str] = None,
-        tags: Optional[str] = None,
+        tags: Optional[str | List[str]] = None,
         notes: Optional[str] = None,
     ) -> UUID:
         """
@@ -204,10 +205,10 @@ class ProgressService:
             event_type: Type of event
             title: Event title
             description: Event description
-            event_date: Date of event (defaults to today)
+            event_date: DateTime/date of event (defaults to current UTC timestamp)
             milestone_id: Optional related milestone
             impact_level: Optional impact level (low, medium, high)
-            tags: Optional comma-separated tags
+            tags: Optional comma-separated tags string or tag list
             notes: Optional notes
             
         Returns:
@@ -222,7 +223,17 @@ class ProgressService:
             raise ProgressServiceError(f"User with ID {user_id} not found")
         
         if event_date is None:
-            event_date = date.today()
+            event_date = datetime.now(timezone.utc)
+        elif isinstance(event_date, date) and not isinstance(event_date, datetime):
+            event_date = datetime.combine(event_date, datetime.min.time(), tzinfo=timezone.utc)
+
+        normalized_tags: Optional[List[str]]
+        if tags is None:
+            normalized_tags = None
+        elif isinstance(tags, str):
+            normalized_tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        else:
+            normalized_tags = [tag.strip() for tag in tags if tag and tag.strip()]
         
         # Create new ProgressEvent (append-only, never updated)
         progress_event = ProgressEvent(
@@ -233,7 +244,7 @@ class ProgressService:
             description=description,
             event_date=event_date,
             impact_level=impact_level or self.IMPACT_LOW,
-            tags=tags,
+            tags=normalized_tags,
             notes=notes,
         )
         
@@ -686,12 +697,16 @@ class ProgressService:
         # Determine overall health status
         if overdue_critical_count > 0:
             health_status = "at_risk"
-        elif overdue_count > (total_milestones * 0.2):  # More than 20% overdue
-            health_status = "needs_attention"
-        elif timeline_progress["completion_percentage"] < 10:
-            health_status = "early_stage"
         else:
-            health_status = "on_track"
+            overdue_ratio_threshold = RiskFusionEngine.get_overdue_ratio_delayed_threshold(self.db)
+            overdue_threshold = total_milestones * overdue_ratio_threshold
+
+            if overdue_count > overdue_threshold:
+                health_status = "needs_attention"
+            elif timeline_progress["completion_percentage"] < 10:
+                health_status = "early_stage"
+            else:
+                health_status = "on_track"
         
         return {
             "has_data": True,

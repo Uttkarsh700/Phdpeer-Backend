@@ -80,7 +80,7 @@ STATIC_OPPORTUNITIES_CATALOG = [
         "source_url": "https://research.google/outreach/phd-fellowship/",
         "organization": "Google Research",
         "requires_subscription": True,
-        "subscription_tier": "premium"
+        "subscription_tier": "team"
     },
     
     # Conferences
@@ -222,7 +222,7 @@ STATIC_OPPORTUNITIES_CATALOG = [
         "source_url": "https://aws.amazon.com/grants/",
         "organization": "Amazon Web Services",
         "requires_subscription": True,
-        "subscription_tier": "premium"
+        "subscription_tier": "team"
     },
     {
         "opportunity_id": "microsoft_research_grant_2026",
@@ -239,7 +239,7 @@ STATIC_OPPORTUNITIES_CATALOG = [
         "source_url": "https://www.microsoft.com/en-us/research/",
         "organization": "Microsoft Research",
         "requires_subscription": True,
-        "subscription_tier": "premium"
+        "subscription_tier": "team"
     },
     
     # Competitions

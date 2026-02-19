@@ -24,6 +24,9 @@ from app.services.timeline_intelligence_engine import (
 )
 from app.services.llm.cold_start import ColdStartGenerator
 from app.utils.invariants import check_committed_timeline_has_draft
+from app.repositories.timeline_repository import TimelineRepository
+from app.orchestrators.timeline_pipeline import TimelinePipeline, TimelinePipelineError
+from app.orchestrators.timeline_response_builder import TimelineResponseBuilder
 
 
 class TimelineOrchestratorError(Exception):
@@ -56,11 +59,6 @@ class TimelineOrchestrator(BaseOrchestrator[Dict[str, Any]]):
     STATUS_COMPLETED = "COMPLETED"
     STATUS_COMMITTED = "COMMITTED"
     
-    @property
-    def orchestrator_name(self) -> str:
-        """Return the orchestrator name."""
-        return "timeline_orchestrator"
-    
     def __init__(self, db: Session, user_id: Optional[UUID] = None):
         """
         Initialize timeline orchestrator.
@@ -71,6 +69,12 @@ class TimelineOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         """
         super().__init__(db, user_id)
         self.intelligence_engine = TimelineIntelligenceEngine()
+        self.timeline_repository = TimelineRepository(db)
+        self.timeline_pipeline = TimelinePipeline(
+            repository=self.timeline_repository,
+            intelligence_engine=self.intelligence_engine,
+        )
+        self.response_builder = TimelineResponseBuilder()
     
     @property
     def orchestrator_name(self) -> str:
@@ -101,14 +105,45 @@ class TimelineOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         Returns:
             UI-ready JSON response
         """
-        # Extract input data from context wrapper (BaseOrchestrator pattern)
-        input_data = context['input']
-        
-        baseline_id = UUID(input_data['baseline_id'])
-        user_id = UUID(input_data['user_id'])
-        title = input_data.get('title')
-        description = input_data.get('description')
-        version_number = input_data.get('version_number', '1.0')
+        input_data = context.get("input", context)
+
+        baseline_id = UUID(input_data["baseline_id"])
+        user_id = UUID(input_data["user_id"])
+        title = input_data.get("title")
+        description = input_data.get("description")
+        version_number = input_data.get("version_number", "1.0")
+
+        with self._trace_step("timeline_pipeline") as step:
+            try:
+                pipeline_result = self.timeline_pipeline.generate_draft_timeline(
+                    baseline_id=baseline_id,
+                    user_id=user_id,
+                    title=title,
+                    description=description,
+                    version_number=version_number,
+                )
+            except TimelinePipelineError as exc:
+                raise TimelineOrchestratorError(str(exc)) from exc
+
+            step.details = {
+                "baseline_id": str(baseline_id),
+                "user_id": str(user_id),
+                "draft_timeline_id": str(pipeline_result.draft_timeline.id),
+                "stage_count": len(pipeline_result.stage_records),
+                "milestone_count": len(pipeline_result.milestone_records),
+            }
+
+        with self._trace_step("build_response") as step:
+            response = self.response_builder.build_generation_response(pipeline_result)
+            step.details = {
+                "timeline_id": response["timeline"]["id"],
+                "total_stages": response["metadata"]["total_stages"],
+                "total_milestones": response["metadata"]["total_milestones"],
+            }
+
+        return response
+
+        # Legacy implementation retained below for phased migration and rollback.
         
         # Step 1: Validate baseline exists
         with self._trace_step("validate_baseline") as step:

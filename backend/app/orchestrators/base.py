@@ -449,8 +449,9 @@ class BaseOrchestrator(ABC, Generic[T]):
         Subclasses can override to add custom context preparation.
         """
         return {
+            **input_data,
             'input': input_data,
-            'user_id': self.user_id,
+            'user_id': input_data.get('user_id', self.user_id),
             'request_id': self._current_request_id,
             'orchestrator': self.orchestrator_name
         }

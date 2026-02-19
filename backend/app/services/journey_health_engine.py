@@ -3,6 +3,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from enum import Enum
 
+from sqlalchemy.orm import Session
+
+from app.services.scoring_config_service import ScoringConfigService
+
 
 class HealthStatus(str, Enum):
     """Health status levels."""
@@ -64,6 +68,7 @@ class HealthRecommendation:
 @dataclass
 class JourneyHealthReport:
     """Complete journey health assessment report."""
+    scoring_version: str
     overall_score: float
     overall_status: HealthStatus
     dimension_scores: Dict[HealthDimension, DimensionScore]
@@ -108,7 +113,7 @@ class JourneyHealthEngine:
     """
     
     # Score thresholds for status determination
-    THRESHOLDS = {
+    DEFAULT_THRESHOLDS = {
         HealthStatus.EXCELLENT: 80,
         HealthStatus.GOOD: 65,
         HealthStatus.FAIR: 50,
@@ -152,9 +157,42 @@ class JourneyHealthEngine:
         },
     }
     
-    def __init__(self):
+    CONFIG_NAME = "journey_health"
+    DEFAULT_VERSION = "journey_health_v1"
+    DEFAULT_WEIGHTS = {
+        HealthDimension.RESEARCH_PROGRESS.value: 1.2,
+        HealthDimension.MENTAL_WELLBEING.value: 1.3,
+        HealthDimension.SUPERVISOR_RELATIONSHIP.value: 1.1,
+        HealthDimension.WORK_LIFE_BALANCE.value: 1.0,
+        HealthDimension.ACADEMIC_CONFIDENCE.value: 1.0,
+        HealthDimension.TIME_MANAGEMENT.value: 0.9,
+        HealthDimension.MOTIVATION.value: 1.1,
+        HealthDimension.SUPPORT_NETWORK.value: 1.0,
+    }
+    DEFAULT_STATUS_THRESHOLDS = {
+        HealthStatus.EXCELLENT.value: 80.0,
+        HealthStatus.GOOD.value: 65.0,
+        HealthStatus.FAIR.value: 50.0,
+        HealthStatus.CONCERNING.value: 35.0,
+        HealthStatus.CRITICAL.value: 0.0,
+    }
+
+    def __init__(self, db: Optional[Session] = None):
         """Initialize the journey health engine."""
-        pass
+        self._scoring_version = self.DEFAULT_VERSION
+        self._runtime_weights = dict(self.DEFAULT_WEIGHTS)
+        self._runtime_status_thresholds = dict(self.DEFAULT_STATUS_THRESHOLDS)
+
+        if db is not None:
+            resolved = ScoringConfigService(db).resolve(
+                engine_name=self.CONFIG_NAME,
+                default_version=self.DEFAULT_VERSION,
+                default_weights=self.DEFAULT_WEIGHTS,
+                default_thresholds=self.DEFAULT_STATUS_THRESHOLDS,
+            )
+            self._scoring_version = resolved.version
+            self._runtime_weights = resolved.weights
+            self._runtime_status_thresholds = resolved.thresholds
     
     def assess_health(
         self,
@@ -204,6 +242,7 @@ class JourneyHealthEngine:
         recommendations = self._generate_recommendations(dimension_scores)
         
         return JourneyHealthReport(
+            scoring_version=self._scoring_version,
             overall_score=overall_score,
             overall_status=overall_status,
             dimension_scores=dimension_scores,
@@ -315,13 +354,13 @@ class JourneyHealthEngine:
             HealthStatus enum value (determined by thresholds)
         """
         # Threshold-based classification (deterministic)
-        if score >= self.THRESHOLDS[HealthStatus.EXCELLENT]:
+        if score >= self._runtime_status_thresholds[HealthStatus.EXCELLENT.value]:
             return HealthStatus.EXCELLENT
-        elif score >= self.THRESHOLDS[HealthStatus.GOOD]:
+        elif score >= self._runtime_status_thresholds[HealthStatus.GOOD.value]:
             return HealthStatus.GOOD
-        elif score >= self.THRESHOLDS[HealthStatus.FAIR]:
+        elif score >= self._runtime_status_thresholds[HealthStatus.FAIR.value]:
             return HealthStatus.FAIR
-        elif score >= self.THRESHOLDS[HealthStatus.CONCERNING]:
+        elif score >= self._runtime_status_thresholds[HealthStatus.CONCERNING.value]:
             return HealthStatus.CONCERNING
         else:
             return HealthStatus.CRITICAL
@@ -406,7 +445,10 @@ class JourneyHealthEngine:
         
         # Deterministic scoring: Weighted average
         for dimension, score in dimension_scores.items():
-            weight = self.DIMENSION_RULES.get(dimension, {}).get("weight", 1.0)
+            weight = self._runtime_weights.get(
+                dimension.value,
+                self.DIMENSION_RULES.get(dimension, {}).get("weight", 1.0),
+            )
             total_weighted_score += score.score * weight
             total_weight += weight
         
