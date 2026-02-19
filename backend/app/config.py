@@ -25,7 +25,15 @@ class Settings(BaseSettings):
     
     # API
     API_V1_PREFIX: str = "/api/v1"
-    
+
+    # LLM Configuration
+    LLM_PROVIDER: str = "anthropic"
+    LLM_API_KEY: str = ""
+    LLM_MODEL: str = "claude-sonnet-4-20250514"
+    LLM_TEMPERATURE: float = 0.15
+    LLM_MAX_TOKENS: int = 4096
+    LLM_TIMEOUT_SECONDS: int = 60
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,

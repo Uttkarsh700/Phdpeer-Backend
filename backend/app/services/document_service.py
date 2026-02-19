@@ -17,6 +17,7 @@ from app.utils.text_extractor import extract_text, TextExtractionError
 from app.utils.text_processor import TextProcessor
 from app.core.event_taxonomy import EventType
 from app.services.event_store import emit_event
+from app.services.llm.metadata_extractor import extract_document_metadata
 
 
 class DocumentServiceError(Exception):
@@ -116,16 +117,43 @@ class DocumentService:
         
         # Generate section_map using headings + heuristics
         section_map = TextProcessor.generate_section_map(normalized_text)
-        
+
         # Count words from normalized text
         word_count = TextProcessor.count_words(normalized_text)
-        
+
+        # Extract document metadata using LLM
+        # This extracts supervisor names, research domain, goals, methodologies, etc.
+        try:
+            llm_metadata = extract_document_metadata(normalized_text, section_map)
+        except Exception as e:
+            # Log but don't fail upload if metadata extraction fails
+            llm_metadata = {}
+            import logging
+            logging.getLogger(__name__).warning(f"LLM metadata extraction failed: {e}")
+
         # Save file to storage
         try:
             file_path = save_upload_file(file_content, unique_filename)
         except Exception as e:
             raise DocumentServiceError(f"File storage failed: {str(e)}")
-        
+
+        # Build document_metadata combining processing info with LLM-extracted metadata
+        document_metadata = {
+            "original_filename": filename,
+            "processing_timestamp": str(self.db.execute("SELECT NOW()").scalar()),
+            # LLM-extracted fields
+            "supervisor_names": llm_metadata.get("supervisor_names", []),
+            "research_domain": llm_metadata.get("research_domain"),
+            "research_goals": llm_metadata.get("research_goals", []),
+            "methodologies": llm_metadata.get("methodologies", []),
+            "funding_sources": llm_metadata.get("funding_sources", []),
+            "deadlines": llm_metadata.get("deadlines", []),
+            "institution_name": llm_metadata.get("institution_name"),
+            "expected_duration_years": llm_metadata.get("expected_duration_years"),
+            "key_tools_and_technologies": llm_metadata.get("key_tools_and_technologies", []),
+            "ethical_requirements": llm_metadata.get("ethical_requirements", []),
+        }
+
         # Create DocumentArtifact record
         # Persist: raw_text, normalized_text (as document_text), section_map_json
         document_artifact = DocumentArtifact(
@@ -141,10 +169,7 @@ class DocumentService:
             word_count=word_count,
             detected_language=detected_language,
             section_map_json=section_map,  # Section map with headings + heuristics
-            document_metadata={
-                "original_filename": filename,
-                "processing_timestamp": str(self.db.execute("SELECT NOW()").scalar())
-            }
+            document_metadata=document_metadata
         )
         
         self.db.add(document_artifact)

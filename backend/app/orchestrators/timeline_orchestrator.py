@@ -22,6 +22,7 @@ from app.services.timeline_intelligence_engine import (
     Dependency,
     StructuredTimeline,
 )
+from app.services.llm.cold_start import ColdStartGenerator
 from app.utils.invariants import check_committed_timeline_has_draft
 
 
@@ -141,151 +142,203 @@ class TimelineOrchestrator(BaseOrchestrator[Dict[str, Any]]):
                 confidence=1.0
             )
         
-        # Step 2: Load baseline document text
+        # Step 2: Load baseline document text OR use cold start
         with self._trace_step("load_document_text") as step:
-            if not baseline.document_artifact_id:
-                raise TimelineOrchestratorError(
-                    "Baseline has no associated document artifact"
-                )
-            
-            document = self.db.query(DocumentArtifact).filter(
-                DocumentArtifact.id == baseline.document_artifact_id
-            ).first()
-            
-            if not document:
-                raise TimelineOrchestratorError(
-                    f"Document artifact {baseline.document_artifact_id} not found"
-                )
-            
-            # Use normalized document_text
-            document_text = document.document_text
-            section_map = document.section_map_json
-            
+            document_text = None
+            section_map = None
+            is_cold_start = False
+
+            if baseline.document_artifact_id:
+                document = self.db.query(DocumentArtifact).filter(
+                    DocumentArtifact.id == baseline.document_artifact_id
+                ).first()
+
+                if document and document.document_text:
+                    # Normal path: use document text
+                    document_text = document.document_text
+                    section_map = document.section_map_json
+
+                    step.details = {
+                        "document_id": str(document.id),
+                        "text_length": len(document_text),
+                        "word_count": document.word_count,
+                        "has_section_map": section_map is not None,
+                        "cold_start": False
+                    }
+
+                    # Add evidence
+                    self.add_evidence(
+                        evidence_type="document_text",
+                        data={
+                            "excerpt": document_text[:500],
+                            "word_count": document.word_count,
+                            "detected_language": document.detected_language,
+                            "section_count": section_map.get("total_sections", 0) if section_map else 0
+                        },
+                        source=f"DocumentArtifact:{document.id}",
+                        confidence=1.0
+                    )
+
+            # If no document or no text, use cold start
             if not document_text:
-                raise TimelineOrchestratorError(
-                    "No document text available for timeline extraction"
+                is_cold_start = True
+                step.details = {
+                    "cold_start": True,
+                    "field_of_study": baseline.field_of_study,
+                    "institution": baseline.institution
+                }
+
+                self.add_evidence(
+                    evidence_type="cold_start",
+                    data={
+                        "reason": "No document available",
+                        "field_of_study": baseline.field_of_study,
+                        "institution": baseline.institution,
+                        "program_name": baseline.program_name
+                    },
+                    source="ColdStartGenerator",
+                    confidence=0.7
                 )
-            
-            step.details = {
-                "document_id": str(document.id),
-                "text_length": len(document_text),
-                "word_count": document.word_count,
-                "has_section_map": section_map is not None
-            }
-            
-            # Add evidence
-            self.add_evidence(
-                evidence_type="document_text",
-                data={
-                    "excerpt": document_text[:500],
-                    "word_count": document.word_count,
-                    "detected_language": document.detected_language,
-                    "section_count": section_map.get("total_sections", 0) if section_map else 0
-                },
-                source=f"DocumentArtifact:{document.id}",
-                confidence=1.0
-            )
         
-        # Step 3: Call detect_stages()
-        with self._trace_step("detect_stages") as step:
-            detected_stages = self.intelligence_engine.detect_stages(
-                text=document_text,
-                section_map=section_map
-            )
-            
-            step.details = {
-                "stages_detected": len(detected_stages),
-                "stage_titles": [s.title for s in detected_stages]
-            }
-            
-            # Add evidence
-            self.add_evidence(
-                evidence_type="detected_stages",
-                data={
-                    "stages": [s.title for s in detected_stages],
-                    "stage_types": [s.stage_type.value for s in detected_stages]
-                },
-                source="TimelineIntelligenceEngine.detect_stages()",
-                confidence=0.9
-            )
-        
-        # Step 4: Call extract_milestones()
-        with self._trace_step("extract_milestones") as step:
-            extracted_milestones = self.intelligence_engine.extract_milestones(
-                text=document_text,
-                section_map=section_map
-            )
-            
-            step.details = {
-                "milestones_extracted": len(extracted_milestones),
-                "critical_milestones": len([m for m in extracted_milestones if m.is_critical])
-            }
-            
-            # Add evidence
-            self.add_evidence(
-                evidence_type="extracted_milestones",
-                data={
-                    "total_milestones": len(extracted_milestones),
-                    "milestone_names": [m.name for m in extracted_milestones[:10]]
-                },
-                source="TimelineIntelligenceEngine.extract_milestones()",
-                confidence=0.8
-            )
-        
-        # Step 5: Call estimate_durations()
-        with self._trace_step("estimate_durations") as step:
-            # Extract discipline from baseline if available
-            discipline = getattr(baseline, 'field_of_study', None)
-            
-            duration_estimates = self.intelligence_engine.estimate_durations(
-                text=document_text,
-                stages=detected_stages,
-                milestones=extracted_milestones,
-                section_map=section_map,
-                discipline=discipline
-            )
-            
-            step.details = {
-                "duration_estimates": len(duration_estimates),
-                "stage_estimates": len([d for d in duration_estimates if d.item_type == "stage"]),
-                "milestone_estimates": len([d for d in duration_estimates if d.item_type == "milestone"])
-            }
-            
-            # Add evidence
-            self.add_evidence(
-                evidence_type="duration_estimates",
-                data={
-                    "total_estimates": len(duration_estimates),
-                    "discipline": discipline
-                },
-                source="TimelineIntelligenceEngine.estimate_durations()",
-                confidence=0.7
-            )
-        
-        # Step 6: Call map_dependencies()
-        with self._trace_step("map_dependencies") as step:
-            dependencies = self.intelligence_engine.map_dependencies(
-                text=document_text,
-                stages=detected_stages,
-                milestones=extracted_milestones,
-                section_map=section_map
-            )
-            
-            step.details = {
-                "dependencies_mapped": len(dependencies),
-                "dependency_types": list(set(d.dependency_type for d in dependencies))
-            }
-            
-            # Add evidence
-            self.add_evidence(
-                evidence_type="dependencies",
-                data={
-                    "total_dependencies": len(dependencies),
+        # Steps 3-6: Extract timeline data (from document or cold start)
+        if is_cold_start:
+            # Cold start path: generate timeline from baseline metadata
+            with self._trace_step("cold_start_generation") as step:
+                cold_start_generator = ColdStartGenerator()
+                cold_start_result = cold_start_generator.generate_cold_start_timeline(
+                    field_of_study=baseline.field_of_study,
+                    institution=baseline.institution,
+                    program_name=baseline.program_name,
+                    start_date=baseline.start_date.isoformat() if baseline.start_date else None,
+                    total_duration_months=baseline.total_duration_months
+                )
+
+                # Parse cold start result into dataclasses
+                detected_stages = self._parse_cold_start_stages(cold_start_result.get("stages", []))
+                extracted_milestones = self._parse_cold_start_milestones(cold_start_result.get("milestones", []))
+                duration_estimates = self._parse_cold_start_durations(cold_start_result.get("durations", []))
+                dependencies = self._parse_cold_start_dependencies(cold_start_result.get("dependencies", []))
+
+                step.details = {
+                    "cold_start": True,
+                    "stages_generated": len(detected_stages),
+                    "milestones_generated": len(extracted_milestones),
+                    "durations_generated": len(duration_estimates),
+                    "dependencies_generated": len(dependencies)
+                }
+
+                self.add_evidence(
+                    evidence_type="cold_start_timeline",
+                    data={
+                        "stages": [s.title for s in detected_stages],
+                        "milestones": [m.name for m in extracted_milestones[:10]],
+                        "field_of_study": baseline.field_of_study
+                    },
+                    source="ColdStartGenerator",
+                    confidence=0.75
+                )
+        else:
+            # Normal path: extract from document
+            # Step 3: Call detect_stages()
+            with self._trace_step("detect_stages") as step:
+                detected_stages = self.intelligence_engine.detect_stages(
+                    text=document_text,
+                    section_map=section_map
+                )
+
+                step.details = {
+                    "stages_detected": len(detected_stages),
+                    "stage_titles": [s.title for s in detected_stages]
+                }
+
+                # Add evidence
+                self.add_evidence(
+                    evidence_type="detected_stages",
+                    data={
+                        "stages": [s.title for s in detected_stages],
+                        "stage_types": [s.stage_type.value for s in detected_stages]
+                    },
+                    source="TimelineIntelligenceEngine.detect_stages()",
+                    confidence=0.9
+                )
+
+            # Step 4: Call extract_milestones()
+            with self._trace_step("extract_milestones") as step:
+                extracted_milestones = self.intelligence_engine.extract_milestones(
+                    text=document_text,
+                    section_map=section_map
+                )
+
+                step.details = {
+                    "milestones_extracted": len(extracted_milestones),
+                    "critical_milestones": len([m for m in extracted_milestones if m.is_critical])
+                }
+
+                # Add evidence
+                self.add_evidence(
+                    evidence_type="extracted_milestones",
+                    data={
+                        "total_milestones": len(extracted_milestones),
+                        "milestone_names": [m.name for m in extracted_milestones[:10]]
+                    },
+                    source="TimelineIntelligenceEngine.extract_milestones()",
+                    confidence=0.8
+                )
+
+            # Step 5: Call estimate_durations()
+            with self._trace_step("estimate_durations") as step:
+                # Extract discipline from baseline if available
+                discipline = getattr(baseline, 'field_of_study', None)
+
+                duration_estimates = self.intelligence_engine.estimate_durations(
+                    text=document_text,
+                    stages=detected_stages,
+                    milestones=extracted_milestones,
+                    section_map=section_map,
+                    discipline=discipline
+                )
+
+                step.details = {
+                    "duration_estimates": len(duration_estimates),
+                    "stage_estimates": len([d for d in duration_estimates if d.item_type == "stage"]),
+                    "milestone_estimates": len([d for d in duration_estimates if d.item_type == "milestone"])
+                }
+
+                # Add evidence
+                self.add_evidence(
+                    evidence_type="duration_estimates",
+                    data={
+                        "total_estimates": len(duration_estimates),
+                        "discipline": discipline
+                    },
+                    source="TimelineIntelligenceEngine.estimate_durations()",
+                    confidence=0.7
+                )
+
+            # Step 6: Call map_dependencies()
+            with self._trace_step("map_dependencies") as step:
+                dependencies = self.intelligence_engine.map_dependencies(
+                    text=document_text,
+                    stages=detected_stages,
+                    milestones=extracted_milestones,
+                    section_map=section_map
+                )
+
+                step.details = {
+                    "dependencies_mapped": len(dependencies),
                     "dependency_types": list(set(d.dependency_type for d in dependencies))
-                },
-                source="TimelineIntelligenceEngine.map_dependencies()",
-                confidence=0.8
-            )
+                }
+
+                # Add evidence
+                self.add_evidence(
+                    evidence_type="dependencies",
+                    data={
+                        "total_dependencies": len(dependencies),
+                        "dependency_types": list(set(d.dependency_type for d in dependencies))
+                    },
+                    source="TimelineIntelligenceEngine.map_dependencies()",
+                    confidence=0.8
+                )
         
         # Step 7: Assemble DraftTimeline
         with self._trace_step("assemble_draft_timeline") as step:
@@ -1378,7 +1431,112 @@ class TimelineOrchestrator(BaseOrchestrator[Dict[str, Any]]):
         
         # Use normalized document text from DocumentService
         return document.document_text
-    
+
+    def _parse_cold_start_stages(self, stages_data: List[Dict]) -> List[DetectedStage]:
+        """
+        Parse cold start stages into DetectedStage dataclasses.
+
+        Args:
+            stages_data: List of stage dictionaries from cold start generator
+
+        Returns:
+            List of DetectedStage objects
+        """
+        detected_stages = []
+        for stage in stages_data:
+            # Map stage_type string to StageType enum
+            stage_type_str = stage.get("stage_type", "other").lower()
+            try:
+                stage_type = StageType(stage_type_str)
+            except ValueError:
+                stage_type = StageType.OTHER
+
+            detected_stages.append(DetectedStage(
+                title=stage.get("title", "Untitled Stage"),
+                stage_type=stage_type,
+                description=stage.get("description", ""),
+                order_hint=stage.get("order_hint", len(detected_stages) + 1),
+                evidence_snippets=[],
+                keywords=[],
+                confidence=stage.get("confidence", 0.8)
+            ))
+
+        return detected_stages
+
+    def _parse_cold_start_milestones(self, milestones_data: List[Dict]) -> List[ExtractedMilestone]:
+        """
+        Parse cold start milestones into ExtractedMilestone dataclasses.
+
+        Args:
+            milestones_data: List of milestone dictionaries from cold start generator
+
+        Returns:
+            List of ExtractedMilestone objects
+        """
+        extracted_milestones = []
+        for milestone in milestones_data:
+            extracted_milestones.append(ExtractedMilestone(
+                name=milestone.get("name", "Untitled Milestone"),
+                description=milestone.get("description", ""),
+                stage=milestone.get("stage", ""),
+                milestone_type=milestone.get("milestone_type", "deliverable"),
+                evidence_snippet="",
+                keywords=[],
+                source_segment="",
+                is_critical=milestone.get("is_critical", False),
+                confidence=milestone.get("confidence", 0.8)
+            ))
+
+        return extracted_milestones
+
+    def _parse_cold_start_durations(self, durations_data: List[Dict]) -> List[DurationEstimate]:
+        """
+        Parse cold start durations into DurationEstimate dataclasses.
+
+        Args:
+            durations_data: List of duration dictionaries from cold start generator
+
+        Returns:
+            List of DurationEstimate objects
+        """
+        duration_estimates = []
+        for duration in durations_data:
+            duration_estimates.append(DurationEstimate(
+                item_description=duration.get("item_description", ""),
+                item_type=duration.get("item_type", "stage"),
+                duration_weeks_min=duration.get("duration_weeks_min", 4),
+                duration_weeks_max=duration.get("duration_weeks_max", 8),
+                duration_months_min=duration.get("duration_months_min", 1),
+                duration_months_max=duration.get("duration_months_max", 2),
+                confidence=duration.get("confidence", 0.7),
+                basis=duration.get("basis", "Cold start estimate")
+            ))
+
+        return duration_estimates
+
+    def _parse_cold_start_dependencies(self, dependencies_data: List[Dict]) -> List[Dependency]:
+        """
+        Parse cold start dependencies into Dependency dataclasses.
+
+        Args:
+            dependencies_data: List of dependency dictionaries from cold start generator
+
+        Returns:
+            List of Dependency objects
+        """
+        dependencies = []
+        for dep in dependencies_data:
+            dependencies.append(Dependency(
+                dependent_item=dep.get("dependent_item", ""),
+                depends_on_item=dep.get("depends_on_item", ""),
+                dependency_type=dep.get("dependency_type", "finish_to_start"),
+                confidence=dep.get("confidence", 0.8),
+                reason=dep.get("reason", "")
+            ))
+
+        return dependencies
+
+
     def _create_draft_timeline_record(
         self,
         baseline: Baseline,

@@ -18,6 +18,8 @@ from app.models.idempotency import IdempotencyKey, DecisionTrace, EvidenceBundle
 from app.models.timeline_edit_history import TimelineEditHistory
 from app.models.questionnaire_draft import QuestionnaireDraft, QuestionnaireVersion
 from app.models.analytics_snapshot import AnalyticsSnapshot
+from app.models.feedback_record import FeedbackRecord
+from app.models.audit_log import AuditLog
 from app.models.opportunity import (
     OpportunityCatalog,
     OpportunityFeedSnapshot,
@@ -54,6 +56,8 @@ __all__ = [
     'QuestionnaireDraft',
     'QuestionnaireVersion',
     'AnalyticsSnapshot',
+    'FeedbackRecord',
+    'AuditLog',
     'OpportunityCatalog',
     'OpportunityFeedSnapshot',
     'OpportunityFeedItem',

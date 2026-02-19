@@ -1,8 +1,9 @@
 """Analytics engine for aggregating timeline progress and journey health data."""
+import logging
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 from datetime import date, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
 from app.models.journey_assessment import JourneyAssessment
@@ -10,7 +11,11 @@ from app.models.progress_event import ProgressEvent
 from app.models.committed_timeline import CommittedTimeline
 from app.models.timeline_stage import TimelineStage
 from app.models.timeline_milestone import TimelineMilestone
+from app.models.analytics_snapshot import AnalyticsSnapshot
 from app.services.progress_service import ProgressService
+from app.services.temporal_engine import TemporalEngine
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -59,29 +64,32 @@ class AnalyticsSummary:
     timeline_id: UUID
     user_id: UUID
     generated_at: date
-    
+
     # Timeline status
     timeline_status: str  # "on_track" | "delayed" | "completed"
-    
+
     # Milestone metrics
     milestone_completion_percentage: float
     total_milestones: int
     completed_milestones: int
     pending_milestones: int
-    
+
     # Delay metrics
     total_delays: int
     overdue_milestones: int
     overdue_critical_milestones: int
     average_delay_days: float
     max_delay_days: int
-    
+
     # Journey health (from latest assessment)
     latest_health_score: Optional[float]  # 0-100
     health_dimensions: Dict[str, float]  # dimension_name -> score (0-100)
-    
+
     # Longitudinal summary
     longitudinal_summary: Dict[str, Any]
+
+    # Temporal analysis (from TemporalEngine)
+    temporal_analysis: Optional[Dict[str, Any]] = field(default=None)
 
 
 class AnalyticsEngine:
@@ -104,15 +112,27 @@ class AnalyticsEngine:
     - Status indicators
     """
     
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, include_temporal: bool = False, use_llm: bool = True):
         """
         Initialize analytics engine.
-        
+
         Args:
             db: Database session
+            include_temporal: Whether to include temporal analysis
+            use_llm: Whether to use LLM for temporal summary generation
         """
         self.db = db
         self.progress_service = ProgressService(db)
+        self.include_temporal = include_temporal
+        self.use_llm = use_llm
+        self._temporal_engine: Optional[TemporalEngine] = None
+
+    @property
+    def temporal_engine(self) -> TemporalEngine:
+        """Lazy initialization of temporal engine."""
+        if self._temporal_engine is None:
+            self._temporal_engine = TemporalEngine(use_llm=self.use_llm)
+        return self._temporal_engine
     
     def aggregate(
         self,
@@ -181,7 +201,22 @@ class AnalyticsEngine:
             progress_events=progress_events,
             latest_assessment=latest_assessment
         )
-        
+
+        # Step 6: Generate temporal analysis if enabled
+        temporal_analysis = None
+        if self.include_temporal:
+            try:
+                temporal_analysis = self._generate_temporal_analysis(
+                    user_id=committed_timeline.user_id,
+                    committed_timeline=committed_timeline,
+                    progress_events=progress_events,
+                    milestones=milestones,
+                    longitudinal_summary=longitudinal_summary,
+                )
+            except Exception as e:
+                logger.error(f"Failed to generate temporal analysis: {e}")
+                temporal_analysis = None
+
         return AnalyticsSummary(
             timeline_id=committed_timeline.id,
             user_id=committed_timeline.user_id,
@@ -198,7 +233,8 @@ class AnalyticsEngine:
             max_delay_days=delay_metrics["max_delay"],
             latest_health_score=health_metrics["overall_score"],
             health_dimensions=health_metrics["dimensions"],
-            longitudinal_summary=longitudinal_summary
+            longitudinal_summary=longitudinal_summary,
+            temporal_analysis=temporal_analysis,
         )
     
     def _aggregate_timeline_progress(
@@ -922,3 +958,87 @@ class AnalyticsEngine:
             "last_milestone_completion_date": last_completion_date.isoformat() if last_completion_date else None,
             "latest_assessment": assessment_info
         }
+
+    def _generate_temporal_analysis(
+        self,
+        user_id: UUID,
+        committed_timeline: CommittedTimeline,
+        progress_events: List[ProgressEvent],
+        milestones: List[TimelineMilestone],
+        longitudinal_summary: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Generate temporal analysis using TemporalEngine.
+
+        Fetches historical snapshots and calls the temporal engine
+        to analyze trends, drift, velocity, and patterns.
+
+        Args:
+            user_id: User ID
+            committed_timeline: Committed timeline
+            progress_events: List of progress events
+            milestones: List of milestones
+            longitudinal_summary: Longitudinal summary dict
+
+        Returns:
+            Temporal analysis dictionary or None if insufficient data
+        """
+        # Fetch historical snapshots for this user
+        snapshots = self.db.query(AnalyticsSnapshot).filter(
+            AnalyticsSnapshot.user_id == user_id
+        ).order_by(AnalyticsSnapshot.created_at.asc()).all()
+
+        # Convert to dictionaries
+        snapshot_dicts = [
+            {
+                "id": str(s.id),
+                "user_id": str(s.user_id),
+                "timeline_version": s.timeline_version,
+                "summary_json": s.summary_json,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+            }
+            for s in snapshots
+        ]
+
+        # Convert progress events to dictionaries
+        event_dicts = [
+            {
+                "id": str(e.id),
+                "user_id": str(e.user_id),
+                "milestone_id": str(e.milestone_id) if e.milestone_id else None,
+                "event_type": e.event_type,
+                "title": e.title,
+                "description": e.description,
+                "event_date": e.event_date.isoformat() if e.event_date else None,
+                "impact_level": e.impact_level,
+            }
+            for e in progress_events
+        ]
+
+        # Convert milestones to dictionaries
+        milestone_dicts = [
+            {
+                "id": str(m.id),
+                "title": m.title,
+                "is_completed": m.is_completed,
+                "is_critical": m.is_critical,
+                "target_date": m.target_date.isoformat() if m.target_date else None,
+                "actual_completion_date": m.actual_completion_date.isoformat() if m.actual_completion_date else None,
+                "stage_title": None,  # Would need to join with stage
+            }
+            for m in milestones
+        ]
+
+        # Calculate total duration in months
+        total_duration_months = None
+        if longitudinal_summary.get("timeline_duration_days"):
+            total_duration_months = longitudinal_summary["timeline_duration_days"] // 30
+
+        # Call temporal engine
+        return self.temporal_engine.analyze_trends(
+            user_id=user_id,
+            snapshots=snapshot_dicts,
+            progress_events=event_dicts,
+            milestones=milestone_dicts,
+            total_duration_months=total_duration_months,
+        )

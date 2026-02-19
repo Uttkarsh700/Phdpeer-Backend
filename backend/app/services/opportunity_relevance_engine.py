@@ -128,18 +128,18 @@ class RelevanceScore:
 class OpportunityRelevanceEngine:
     """
     Deterministic opportunity relevance scoring engine.
-    
+
     Scores opportunities based on:
-    1. Discipline alignment (40% weight)
+    1. Discipline alignment (30% weight)
     2. Research stage appropriateness (30% weight)
-    3. Timeline compatibility (15% weight)
+    3. Timeline compatibility (25% weight)
     4. Deadline suitability (15% weight)
     """
-    
+
     # Weights for overall score
-    DISCIPLINE_WEIGHT = 0.40
+    DISCIPLINE_WEIGHT = 0.30
     STAGE_WEIGHT = 0.30
-    TIMELINE_WEIGHT = 0.15
+    TIMELINE_WEIGHT = 0.25
     DEADLINE_WEIGHT = 0.15
     
     # Discipline taxonomy (broad categories)
@@ -152,6 +152,30 @@ class OpportunityRelevanceEngine:
         "Engineering": ["Electrical", "Mechanical", "Civil", "Biomedical"],
         "Social Sciences": ["Psychology", "Sociology", "Anthropology", "Economics"],
         "Humanities": ["History", "Literature", "Philosophy", "Languages"],
+    }
+
+    # Keywords used to map a granular stage name string → coarse ResearchStage enum.
+    # Each list entry is a substring that, if present in the lowercased stage name,
+    # identifies the corresponding ResearchStage.
+    _STAGE_NAME_KEYWORDS: Dict[ResearchStage, List[str]] = {
+        ResearchStage.EARLY: [
+            "coursework", "literature review", "literature_review",
+            "proposal", "qualifying", "prelim", "preliminary",
+            "orientation", "onboarding",
+        ],
+        ResearchStage.MID: [
+            "methodology", "data collection", "data_collection",
+            "fieldwork", "field work", "field_work",
+            "experiment", "survey", "interviews", "lab",
+        ],
+        ResearchStage.LATE: [
+            "analysis", "writing", "drafting",
+            "dissertation", "thesis", "manuscript", "conclusions",
+        ],
+        ResearchStage.POST_SUBMISSION: [
+            "submission", "defense", "viva", "publication",
+            "revision", "post submission", "post_submission", "job market",
+        ],
     }
     
     def score_opportunity(
@@ -188,13 +212,21 @@ class OpportunityRelevanceEngine:
         )
         reason_tags.extend(discipline_tags)
         
-        # 2. Score research stage appropriateness
+        # 2. Score research stage appropriateness.
+        # If a granular stage name is available via TimelineContext, derive the
+        # coarse ResearchStage from it so the two representations stay in sync.
+        effective_stage = user_profile.research_stage
+        if timeline_context and timeline_context.current_stage_name:
+            effective_stage = self._map_stage_name_to_research_stage(
+                timeline_context.current_stage_name
+            )
+
         stage_score, stage_tags = self._score_stage(
             opportunity.eligible_stages,
-            user_profile.research_stage
+            effective_stage
         )
         reason_tags.extend(stage_tags)
-        
+
         # 3. Score timeline compatibility
         timeline_score, timeline_tags = self._score_timeline(
             opportunity.opportunity_type,
@@ -202,12 +234,16 @@ class OpportunityRelevanceEngine:
             timeline_context
         )
         reason_tags.extend(timeline_tags)
-        
+
         # 4. Score deadline suitability
+        expected_completion = (
+            timeline_context.expected_completion_date if timeline_context else None
+        )
         deadline_score, deadline_tags = self._score_deadline(
             opportunity.deadline,
             current_date,
-            opportunity.opportunity_type
+            opportunity.opportunity_type,
+            expected_completion
         )
         reason_tags.extend(deadline_tags)
         
@@ -289,8 +325,50 @@ class OpportunityRelevanceEngine:
         
         return scores
     
+    # Stage-mapping helpers
+
+    def _map_stage_name_to_research_stage(self, stage_name: str) -> ResearchStage:
+        """Map a granular stage name string to the coarse ResearchStage enum.
+
+        Checks `_STAGE_NAME_KEYWORDS` in order (EARLY → MID → LATE → POST).
+        Falls back to MID for unrecognised names so scoring degrades gracefully.
+
+        Examples:
+            "Literature Review"  → EARLY
+            "Data Collection"    → MID
+            "Writing"            → LATE
+            "Defense"            → POST_SUBMISSION
+        """
+        stage_lower = stage_name.lower()
+        for stage, keywords in self._STAGE_NAME_KEYWORDS.items():
+            if any(kw in stage_lower for kw in keywords):
+                return stage
+        return ResearchStage.MID  # safe default
+
+    def _build_timeline_context_from_stages(
+        self,
+        stages: list,
+        milestones: list
+    ) -> TimelineContext:
+        """Build a basic TimelineContext from an ordered list of stage names and milestones.
+
+        The first entry in ``stages`` is treated as the current stage at 0% progress.
+        The next two entries (if present) become ``upcoming_stages``.
+
+        Useful when callers have stage order data but haven't constructed a full
+        TimelineContext yet.
+        """
+        current_stage = stages[0] if stages else "Unknown"
+        upcoming = stages[1:3] if len(stages) > 1 else []
+        return TimelineContext(
+            current_stage_name=current_stage,
+            current_stage_progress=0.0,
+            upcoming_stages=upcoming,
+            critical_milestones=list(milestones),
+        )
+
     # Private scoring methods
-    
+
     def _score_discipline(
         self,
         opportunity_disciplines: List[str],
@@ -362,98 +440,147 @@ class OpportunityRelevanceEngine:
         opportunity_keywords: List[str],
         timeline_context: Optional[TimelineContext]
     ) -> tuple[float, List[ReasonTag]]:
-        """Score timeline compatibility."""
-        tags = []
-        
+        """Score timeline compatibility, incorporating stage progress.
+
+        Score is a normalized weighted combination of three keyword signals
+        (current stage, upcoming stages, milestones) plus an opportunity-type
+        alignment signal — no additive bonuses on a fixed base.
+
+        Progress drives the current-vs-upcoming weighting:
+          - progress ~0.0 → current stage has 80% weight, upcoming 20%
+          - progress ~1.0 → current stage has 20% weight, upcoming 80%
+
+        Without any keyword matches the score degrades to a low-neutral range
+        (~20-44) derived from the type-alignment signal only.
+        """
+        tags: List[ReasonTag] = []
+
         if timeline_context is None:
-            # No timeline context, use neutral score
             return 50.0, tags
-        
-        score = 50.0  # Base score
-        
-        # Check if opportunity aligns with current stage
-        current_stage_lower = timeline_context.current_stage_name.lower()
+
         opp_keywords_lower = [k.lower() for k in opportunity_keywords]
-        
-        # Direct stage name match
-        if any(keyword in current_stage_lower for keyword in opp_keywords_lower):
-            tags.append(ReasonTag.ALIGNS_WITH_CURRENT_STAGE)
-            score += 30.0
-        
-        # Check upcoming stages
+        current_stage_lower = timeline_context.current_stage_name.lower()
+        # Clamp progress to [0, 1] in case callers supply out-of-range values
+        progress = max(0.0, min(1.0, timeline_context.current_stage_progress))
         upcoming_stages_lower = [s.lower() for s in timeline_context.upcoming_stages]
-        if any(keyword in stage for keyword in opp_keywords_lower for stage in upcoming_stages_lower):
-            tags.append(ReasonTag.ALIGNS_WITH_UPCOMING_STAGE)
-            score += 20.0
-        
-        # Check critical milestones
         milestones_lower = [m.lower() for m in timeline_context.critical_milestones]
-        if any(keyword in milestone for keyword in opp_keywords_lower for milestone in milestones_lower):
+
+        # --- Binary keyword match signals ---
+        current_match = any(kw in current_stage_lower for kw in opp_keywords_lower)
+        upcoming_match = any(
+            kw in stage
+            for kw in opp_keywords_lower
+            for stage in upcoming_stages_lower
+        )
+        milestone_match = any(
+            kw in milestone
+            for kw in opp_keywords_lower
+            for milestone in milestones_lower
+        )
+
+        if current_match:
+            tags.append(ReasonTag.ALIGNS_WITH_CURRENT_STAGE)
+        if upcoming_match:
+            tags.append(ReasonTag.ALIGNS_WITH_UPCOMING_STAGE)
+        if milestone_match:
             tags.append(ReasonTag.SUPPORTS_MILESTONE)
-            score += 20.0
-        
-        # Opportunity type alignment
+
+        # --- Progress-aware weighting (current_weight + upcoming_weight == 1.0) ---
+        current_weight = 0.80 - (progress * 0.60)   # 0.80 → 0.20
+        upcoming_weight = 0.20 + (progress * 0.60)  # 0.20 → 0.80
+
+        # Keyword component: normalize over max possible raw value.
+        # Max raw = current_weight + upcoming_weight + 0.5 = 1.0 + 0.5 = 1.5
+        keyword_raw = (
+            float(current_match) * current_weight
+            + float(upcoming_match) * upcoming_weight
+            + float(milestone_match) * 0.5
+        )
+        keyword_component = keyword_raw / 1.5  # 0.0 to 1.0
+
+        # --- Opportunity-type alignment component (0.0 to 1.0) ---
+        type_component = 0.5  # neutral default
         if opportunity_type == OpportunityType.CONFERENCE:
-            # Conferences useful in mid-late stages
             if "writing" in current_stage_lower or "analysis" in current_stage_lower:
-                score += 10.0
+                type_component = 0.8
         elif opportunity_type == OpportunityType.GRANT:
-            # Grants useful in early-mid stages
             if "data collection" in current_stage_lower or "methodology" in current_stage_lower:
-                score += 10.0
-        
+                type_component = 0.8
+
+        # --- Final score: 70% keyword, 30% type alignment ---
+        # Without any keyword match, deflate to near-neutral (20–44 range).
+        has_any_match = current_match or upcoming_match or milestone_match
+        if has_any_match:
+            score = (keyword_component * 0.70 + type_component * 0.30) * 100.0
+        else:
+            score = type_component * 30.0 + 20.0
+
         return min(score, 100.0), tags
     
     def _score_deadline(
         self,
         deadline: date,
         current_date: date,
-        opportunity_type: OpportunityType
+        opportunity_type: OpportunityType,
+        expected_completion_date: Optional[date] = None
     ) -> tuple[float, List[ReasonTag]]:
-        """Score deadline suitability."""
+        """Score deadline suitability, accounting for expected completion date.
+
+        After the base timing score is computed two optional adjustments apply:
+        - If the deadline falls *after* ``expected_completion_date`` the student
+          is unlikely to benefit, so the score is halved.
+        - If the deadline falls within 90 days *before* ``expected_completion_date``
+          (final phase alignment) the score receives a 10% boost, capped at 100.
+        """
         tags = []
-        
         days_until_deadline = (deadline - current_date).days
-        
+
         # Missed deadline
         if days_until_deadline < 0:
             tags.append(ReasonTag.DEADLINE_MISSED)
             return 0.0, tags
-        
-        # Very tight deadline (< 1 week)
+
+        # Very tight (< 1 week)
         if days_until_deadline < 7:
             tags.append(ReasonTag.DEADLINE_VERY_TIGHT)
-            return 40.0, tags
-        
-        # Tight deadline (1-2 weeks)
-        if days_until_deadline < 14:
+            score = 40.0
+        # Tight (1–2 weeks)
+        elif days_until_deadline < 14:
             tags.append(ReasonTag.DEADLINE_TIGHT)
-            return 65.0, tags
-        
-        # Optimal window depends on opportunity type
-        if opportunity_type in [OpportunityType.GRANT, OpportunityType.FELLOWSHIP]:
+            score = 65.0
+        # Type-dependent optimal window
+        elif opportunity_type in [OpportunityType.GRANT, OpportunityType.FELLOWSHIP]:
             # Grants need more prep time
             if 30 <= days_until_deadline <= 90:
                 tags.append(ReasonTag.DEADLINE_OPTIMAL)
-                return 100.0, tags
+                score = 100.0
             elif 14 <= days_until_deadline < 30:
-                return 80.0, tags
+                score = 80.0
             elif 90 < days_until_deadline <= 180:
-                return 90.0, tags
+                score = 90.0
             else:  # > 180 days
                 tags.append(ReasonTag.DEADLINE_TOO_FAR)
-                return 70.0, tags
-        
+                score = 70.0
         else:  # Conference, workshop, competition
-            # Less prep time needed
             if 14 <= days_until_deadline <= 60:
                 tags.append(ReasonTag.DEADLINE_OPTIMAL)
-                return 100.0, tags
+                score = 100.0
             elif 60 < days_until_deadline <= 120:
-                return 85.0, tags
+                score = 85.0
             else:  # > 120 days
                 tags.append(ReasonTag.DEADLINE_TOO_FAR)
-                return 75.0, tags
+                score = 75.0
+
+        # Adjust for expected completion date when available
+        if expected_completion_date is not None:
+            if deadline > expected_completion_date:
+                # Opportunity falls after graduation — student unlikely to benefit
+                score *= 0.5
+            elif (expected_completion_date - deadline).days <= 90:
+                # Deadline aligns with the final phase of studies
+                score = min(score * 1.10, 100.0)
+
+        return score, tags
     
     def _add_characteristic_tags(self, opportunity: Opportunity) -> List[ReasonTag]:
         """Add tags based on opportunity characteristics."""
