@@ -20,6 +20,13 @@ from app.models.questionnaire_draft import QuestionnaireDraft, QuestionnaireVers
 from app.models.analytics_snapshot import AnalyticsSnapshot
 from app.models.feedback_record import FeedbackRecord
 from app.models.audit_log import AuditLog
+from app.models.document_stage_suggestion import DocumentStageSuggestion
+from app.models.engagement_event import EngagementEvent
+from app.models.user_opportunity import UserOpportunity
+from app.models.writing_version import WritingVersion
+from app.models.supervision_session import SupervisionSession
+from app.models.timeline_adjustment_suggestion import TimelineAdjustmentSuggestion
+from app.models.supervisor_assignment import SupervisorAssignment
 from app.models.opportunity import (
     OpportunityCatalog,
     OpportunityFeedSnapshot,
@@ -52,6 +59,13 @@ __all__ = [
     'AnalyticsSnapshot',
     'FeedbackRecord',
     'AuditLog',
+    'DocumentStageSuggestion',
+    'EngagementEvent',
+    'UserOpportunity',
+    'WritingVersion',
+    'SupervisionSession',
+    'TimelineAdjustmentSuggestion',
+    'SupervisorAssignment',
     'OpportunityCatalog',
     'OpportunityFeedSnapshot',
     'OpportunityFeedItem',
